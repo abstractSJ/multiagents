@@ -1,0 +1,27 @@
+{
+  "schema_version": "1.0",
+  "source_name": "user_supplied_market_valuation_source_sample",
+  "updated_at": "2026-05-02",
+  "provider": "to_be_configured",
+  "description": "行情估值本地适配器样例文件。请用用户稳定可靠来源导出的真实数据替换示例数值。",
+  "snapshots": [
+    {
+      "snapshot_id": "mkt-600519-20260502",
+      "stock_code": "600519",
+      "company_name": "贵州茅台",
+      "as_of_date": "2026-05-02",
+      "currency": "CNY",
+      "price": null,
+      "market_cap": null,
+      "pe_ttm": null,
+      "pb": null,
+      "ps_ttm": null,
+      "ev_ebitda": null,
+      "dividend_yield": null,
+      "source_name": "user_supplied_sample",
+      "source_url": null,
+      "reliability": "low",
+      "limitations": ["样例文件未填真实行情估值，接入稳定来源后应替换为真实快照。"]
+    }
+  ]
+}

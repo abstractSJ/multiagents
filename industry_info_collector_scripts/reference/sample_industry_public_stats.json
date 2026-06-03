@@ -1,0 +1,22 @@
+{
+  "schema_version": "1.0",
+  "source_name": "manual_public_stats_sample",
+  "updated_at": "2026-05-02",
+  "description": "行业公开统计本地适配器样例文件，仅用于验证格式。",
+  "stats": [
+    {
+      "stat_id": "stat-baijiu-001",
+      "industry": "白酒",
+      "metric_name": "行业收入增速样例",
+      "period": "2025",
+      "frequency": "annual",
+      "value": null,
+      "unit": "%",
+      "yoy": null,
+      "source_name": "manual_sample",
+      "source_url": null,
+      "reliability": "low",
+      "limitations": ["样例占位，真实使用时应替换为行业协会、统计局或其他权威来源数据。"]
+    }
+  ]
+}

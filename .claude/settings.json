@@ -1,0 +1,13 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(python \"info_collector_scripts/run_cninfo_collection.py\" *)",
+      "Bash(python \"info_processor_scripts/run_pdf_processing.py\" *)",
+      "Bash(python \"info_processor_scripts/build_llm_digest.py\" *)",
+      "Bash(python \"info_processor_scripts/build_report_rag_index.py\" *)",
+      "Bash(python \"info_processor_scripts/compare_digest_with_summary.py\" *)",
+      "Bash(python \"financial_analyst_scripts/run_financial_analysis.py\" *)",
+      "Bash(python \"industry_info_collector_scripts/run_industry_collection.py\" *)"
+    ]
+  }
+}

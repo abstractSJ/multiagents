@@ -1,0 +1,21 @@
+{
+  "schema_version": "1.0",
+  "source_name": "manual_policy_regulation_sample",
+  "updated_at": "2026-05-02",
+  "description": "政策监管本地适配器样例文件，仅用于验证格式。",
+  "policies": [
+    {
+      "policy_id": "pol-baijiu-001",
+      "date": "2026-01-01",
+      "jurisdiction": "China",
+      "regulator": "示例监管机构",
+      "industry": "白酒",
+      "title": "白酒行业政策监管样例记录",
+      "summary": "该记录用于演示政策监管适配器格式，真实使用时应填入政策原文摘要和来源。",
+      "impact_areas": ["compliance", "demand", "pricing"],
+      "source_url": null,
+      "reliability": "low",
+      "limitations": ["样例记录，不代表真实政策。"]
+    }
+  ]
+}

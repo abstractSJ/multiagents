@@ -1,0 +1,57 @@
+# Python 运行缓存
+__pycache__/
+*.py[cod]
+*$py.class
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+htmlcov/
+
+# 虚拟环境与本地依赖
+.venv/
+venv/
+env/
+ENV/
+
+# 本地环境变量与私有配置
+.env
+.env.*
+!.env.example
+.claude/settings.local.json
+
+# Claude / Playwright 本地运行日志
+.playwright-cli/
+*.log
+
+# 投研工作区产物：财报、解析结果、RAG、报告、行情快照等均应本地生成
+*_workspace/
+research_workspace/
+researcher_workspace/
+collector_workspace/
+processor_workspace/
+analyst_workspace/
+valuation_workspace/
+
+# 临时研究资料和一次性下载包
+tmp_*/
+temp_*/
+
+# 大型原始资料与二进制产物，避免误传公开仓库
+*.pdf
+*.png
+*.jpg
+*.jpeg
+*.gif
+*.webp
+*.xlsx
+*.xls
+*.parquet
+*.sqlite
+*.db
+
+# 系统和编辑器文件
+.DS_Store
+Thumbs.db
+.vscode/
+.idea/

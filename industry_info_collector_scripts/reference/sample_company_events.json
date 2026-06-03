@@ -1,0 +1,20 @@
+{
+  "schema_version": "1.0",
+  "source_name": "manual_company_events_sample",
+  "updated_at": "2026-05-02",
+  "description": "公司事件本地适配器样例文件，仅用于验证格式。",
+  "events": [
+    {
+      "event_id": "evt-600519-001",
+      "stock_code": "600519",
+      "company_name": "贵州茅台",
+      "date": "2026-04-17",
+      "event_type": "annual_report_disclosure",
+      "title": "贵州茅台披露2025年年度报告",
+      "summary": "公司披露2025年年度报告，可作为行业研究员核验经营数据和管理层表述的入口。",
+      "source_url": null,
+      "reliability": "medium",
+      "limitations": ["样例记录，真实使用时应替换为公告原文链接或公告编号。"]
+    }
+  ]
+}

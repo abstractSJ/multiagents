@@ -1,0 +1,154 @@
+{
+  "schema_version": "1.1",
+  "updated_at": "2026-05-02",
+  "description": "Generic offline seed data for industry information collector. 600519/白酒 is only a sample, not a hardcoded collector assumption.",
+  "companies": {
+    "600519": {
+      "company_name": "贵州茅台",
+      "exchange": "SSE",
+      "country": "China",
+      "initial_industry_classification": {
+        "primary_industry": "白酒",
+        "secondary_industry": "高端白酒",
+        "classification_system": "curated_sample_seed",
+        "classification_basis": [
+          "贵州茅台主营业务以茅台酒及系列酒生产销售为主。",
+          "茅台酒具有高端白酒品牌、渠道和价格属性。"
+        ],
+        "limitations": [
+          "该分类为离线样例 seed，不替代申万、中信、交易所、Wind、Choice 或其他权威行业分类。",
+          "行业研究员仍需结合收入结构、利润来源、产品档次和同行比较复核真实行业归属。"
+        ]
+      },
+      "business_segments": [
+        {
+          "segment_name": "茅台酒",
+          "role_in_business": "样例分部，实际应由年报分部表或手工源复核。",
+          "keywords": ["茅台酒"],
+          "limitations": ["seed 分部不替代年报分部表。"]
+        },
+        {
+          "segment_name": "系列酒",
+          "role_in_business": "样例分部，实际应由年报分部表或手工源复核。",
+          "keywords": ["系列酒"],
+          "limitations": ["seed 分部不替代年报分部表。"]
+        }
+      ],
+      "peer_candidates": [
+        {
+          "stock_code": "000858",
+          "company_name": "五粮液",
+          "exchange": "SZSE",
+          "reason": "高端白酒核心可比公司，品牌定位、渠道和价格体系与贵州茅台具备可比性。",
+          "limitations": ["尚未接入实时财务、估值和批价数据，不能直接作为最终估值可比公司。"]
+        },
+        {
+          "stock_code": "000568",
+          "company_name": "泸州老窖",
+          "exchange": "SZSE",
+          "reason": "高端及次高端白酒代表公司，可用于比较品牌、产品结构和利润率。",
+          "limitations": ["尚未接入实时财务、估值和渠道数据，需后续复核业务口径。"]
+        },
+        {
+          "stock_code": "600809",
+          "company_name": "山西汾酒",
+          "exchange": "SSE",
+          "reason": "全国化白酒龙头，可用于比较行业景气、渠道扩张和产品结构变化。",
+          "limitations": ["其香型、价格带和区域结构与贵州茅台存在差异，估值可比性需二次筛选。"]
+        },
+        {
+          "stock_code": "002304",
+          "company_name": "洋河股份",
+          "exchange": "SZSE",
+          "reason": "全国化白酒龙头，可用于比较渠道、产品结构和消费需求变化。",
+          "limitations": ["产品价格带和渠道结构与高端茅台酒存在差异，不能机械比较估值倍数。"]
+        }
+      ]
+    }
+  },
+  "industries": {
+    "白酒": {
+      "value_chain": {
+        "upstream": ["高粱", "小麦", "包材", "基酒产能", "酿造土地和生态环境"],
+        "midstream": ["白酒生产企业", "品牌运营", "产品体系管理", "渠道管理", "经销商体系"],
+        "downstream": ["经销商", "商超", "电商", "团购", "商务宴请", "礼赠消费", "个人消费"],
+        "profit_pool_note": "样例：高端白酒行业利润池通常向强品牌、强渠道、强定价权的头部酒企集中，但短期批价、库存和动销会影响渠道信心和发货节奏。",
+        "limitations": [
+          "该产业链说明为离线研究框架，不代表实时利润池测算。",
+          "需要补充行业协会、公司公告、渠道调研和批价数据验证。"
+        ]
+      },
+      "industry_metrics": [
+        {
+          "metric_name": "高端白酒批价",
+          "description": "样例指标：高端白酒批价用于跟踪渠道价格体系、经销商信心和终端需求。",
+          "expected_frequency": "周度或月度",
+          "source_type": "curated_seed",
+          "reliability": "low",
+          "limitations": ["当前未接入实时批价数据库，只能作为后续补采方向。"]
+        },
+        {
+          "metric_name": "渠道库存",
+          "description": "样例指标：渠道库存反映经销商去化压力和公司发货可持续性。",
+          "expected_frequency": "月度或季度",
+          "source_type": "curated_seed",
+          "reliability": "low",
+          "limitations": ["当前未接入渠道库存调研或第三方库存数据。"]
+        },
+        {
+          "metric_name": "终端动销",
+          "description": "样例指标：终端动销用于观察真实消费需求。",
+          "expected_frequency": "月度或节假日前后",
+          "source_type": "curated_seed",
+          "reliability": "low",
+          "limitations": ["当前未接入终端动销样本或渠道调研数据。"]
+        }
+      ],
+      "tracking_indicators": {
+        "supply_demand": ["终端动销", "消费场景", "公司发货节奏"],
+        "pricing": ["高端白酒批价", "竞品批价", "直营与批发价差"],
+        "inventory": ["渠道库存", "渠道周转天数"],
+        "cost": ["高粱", "小麦", "包材"],
+        "technology": ["渠道数字化", "防伪溯源"],
+        "policy": ["消费税", "食品安全监管", "反腐与公务消费监管"]
+      },
+      "policy_and_regulation": [
+        {
+          "topic": "消费税政策",
+          "why_relevant": "消费税调整会影响白酒企业盈利、渠道价格和市场预期。",
+          "source_type": "curated_seed",
+          "reliability": "low",
+          "limitations": ["当前未接入最新税收政策原文。"]
+        },
+        {
+          "topic": "食品安全与质量监管",
+          "why_relevant": "食品安全监管影响白酒企业合规、品牌信任和生产质量控制。",
+          "source_type": "curated_seed",
+          "reliability": "low",
+          "limitations": ["当前未接入最新监管文件。"]
+        }
+      ],
+      "technology_trends": [
+        {
+          "topic": "渠道数字化和直营体系建设",
+          "why_relevant": "数字化渠道和直营占比变化会影响价格管控、渠道利润分配和消费者触达。",
+          "source_type": "curated_seed",
+          "reliability": "low",
+          "limitations": ["当前只作为研究方向，未接入实时渠道数据。"]
+        }
+      ],
+      "news_pointers": [
+        {
+          "topic": "高端白酒批价变化",
+          "recommended_sources": ["公司公告", "交易所互动平台", "行业协会", "主流财经媒体", "渠道调研"],
+          "limitations": ["离线 demo 不抓取实时新闻。"]
+        }
+      ],
+      "recommended_next_collection": [
+        "补充高端白酒实时批价和历史批价序列。",
+        "补充渠道库存和终端动销数据。",
+        "补充白酒行业政策原文、行业协会统计和主流财经新闻证据。"
+      ]
+    }
+  }
+}

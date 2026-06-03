@@ -1,0 +1,2 @@
+signal_id,industry,date,signal_type,metric_name,value,unit,direction,summary,source_name,source_url,reliability,limitations
+sig-baijiu-001,白酒,2026-05-02,pricing,价格信号样例,,,unknown,该记录用于演示行业信号适配器格式，真实使用时应替换为批价、价格指数或其他高频信号。,manual_sample,,low,样例记录，不代表真实行业状态。
