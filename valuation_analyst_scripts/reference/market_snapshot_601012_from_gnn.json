@@ -1,0 +1,73 @@
+{
+  "as_of_date": "2026-03-12",
+  "stock_code": "601012",
+  "price": 18.94,
+  "total_market_cap_yuan": 143528536690.0,
+  "total_market_cap_hundred_million_cny": 1435.2854,
+  "circ_market_cap_hundred_million_cny": 1435.2839,
+  "net_profit_ttm_hundred_million_cny": -59.4354,
+  "cashflow_ttm_hundred_million_cny": 12.0379,
+  "net_asset_hundred_million_cny": 587.5862,
+  "total_asset_hundred_million_cny": 1496.043,
+  "total_debt_hundred_million_cny": 908.4568,
+  "pb": 2.4427,
+  "pcf_ttm": 119.2308,
+  "pe_ttm": null,
+  "debt_ratio": 0.6072,
+  "roe_ttm": -0.1012,
+  "historical_pb_percentile_since_2016": 0.2292,
+  "historical_pcf_percentile_since_2016": 0.9661,
+  "same_sw3_peer_count": 23,
+  "same_sw3_stats": {
+    "pb": {
+      "count": 23.0,
+      "median": 3.0895,
+      "mean": 2.4473,
+      "q25": 1.9968,
+      "q75": 4.4439,
+      "min": -30.1016,
+      "max": 19.2973
+    },
+    "pe_ttm_positive_only": {
+      "count": 6.0,
+      "median": 53.7611,
+      "mean": 71.227,
+      "q25": 36.3439,
+      "q75": 108.2693,
+      "min": 16.24,
+      "max": 146.6231
+    },
+    "pcf_ttm_positive_only": {
+      "count": 16.0,
+      "median": 46.3045,
+      "mean": 70.1464,
+      "q25": 11.9712,
+      "q75": 90.068,
+      "min": 4.5877,
+      "max": 382.8822
+    },
+    "debt_ratio": {
+      "count": 23.0,
+      "median": 0.7387,
+      "mean": 0.7016,
+      "q25": 0.5935,
+      "q75": 0.7735,
+      "min": 0.327,
+      "max": 1.3865
+    },
+    "roe_ttm": {
+      "count": 23.0,
+      "median": -0.1012,
+      "mean": -0.2666,
+      "q25": -0.275,
+      "q75": 0.0436,
+      "min": -5.4648,
+      "max": 1.4267
+    }
+  },
+  "notes": [
+    "training_data.pkl latest date is 2026-03-12, earlier than current date 2026-05-06.",
+    "PE is invalid for Longi because net_profit_ttm is negative.",
+    "same_sw3 peers are based on local encoded SW industry classification, not final manually curated comparable-company pool."
+  ]
+}

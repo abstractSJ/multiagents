@@ -1,0 +1,183 @@
+{
+  "schema_version": "1.0",
+  "stock_code": "601012",
+  "company_name": "隆基绿能",
+  "source_csv": "valuation_analyst_scripts\\reference\\consensus_forecast_601012_public_sources.csv",
+  "method": "public_sources_internal_consensus; prefer post_annual_report_sample for valuation because older 2025 reports did not include 2025A/2026Q1 downside.",
+  "all_visible_public_sample": {
+    "2025": {
+      "revenue_hundred_million_cny": {
+        "count": 3,
+        "mean": 701.3033,
+        "median": 701.99,
+        "min": 676.0,
+        "max": 725.92
+      },
+      "net_profit_hundred_million_cny": {
+        "count": 3,
+        "mean": -34.18,
+        "median": -36.0,
+        "min": -40.19,
+        "max": -26.35
+      },
+      "eps_cny": {
+        "count": 1,
+        "mean": -0.47,
+        "median": -0.47,
+        "min": -0.47,
+        "max": -0.47
+      }
+    },
+    "2026": {
+      "revenue_hundred_million_cny": {
+        "count": 4,
+        "mean": 768.255,
+        "median": 772.325,
+        "min": 702.61,
+        "max": 825.76
+      },
+      "net_profit_hundred_million_cny": {
+        "count": 5,
+        "mean": 12.6928,
+        "median": 10.34,
+        "min": 2.4742,
+        "max": 25.77
+      },
+      "eps_cny": {
+        "count": 3,
+        "mean": 0.1433,
+        "median": 0.14,
+        "min": 0.03,
+        "max": 0.26
+      }
+    },
+    "2027": {
+      "revenue_hundred_million_cny": {
+        "count": 4,
+        "mean": 865.855,
+        "median": 899.33,
+        "min": 742.0,
+        "max": 922.76
+      },
+      "net_profit_hundred_million_cny": {
+        "count": 5,
+        "mean": 39.0006,
+        "median": 36.443,
+        "min": 28.38,
+        "max": 49.04
+      },
+      "eps_cny": {
+        "count": 3,
+        "mean": 0.5133,
+        "median": 0.48,
+        "min": 0.42,
+        "max": 0.64
+      }
+    },
+    "2028": {
+      "revenue_hundred_million_cny": {
+        "count": 1,
+        "mean": 1043.9,
+        "median": 1043.9,
+        "min": 1043.9,
+        "max": 1043.9
+      },
+      "net_profit_hundred_million_cny": {
+        "count": 2,
+        "mean": 56.9574,
+        "median": 56.9574,
+        "min": 56.52,
+        "max": 57.3948
+      },
+      "eps_cny": {
+        "count": 1,
+        "mean": 0.76,
+        "median": 0.76,
+        "min": 0.76,
+        "max": 0.76
+      }
+    }
+  },
+  "post_2025_annual_and_2026q1_sample_report_date_gte_2026_04_30": {
+    "2025": {
+      "revenue_hundred_million_cny": null,
+      "net_profit_hundred_million_cny": null,
+      "eps_cny": null
+    },
+    "2026": {
+      "revenue_hundred_million_cny": {
+        "count": 1,
+        "mean": 702.61,
+        "median": 702.61,
+        "min": 702.61,
+        "max": 702.61
+      },
+      "net_profit_hundred_million_cny": {
+        "count": 2,
+        "mean": 3.6771,
+        "median": 3.6771,
+        "min": 2.4742,
+        "max": 4.88
+      },
+      "eps_cny": {
+        "count": 1,
+        "mean": 0.03,
+        "median": 0.03,
+        "min": 0.03,
+        "max": 0.03
+      }
+    },
+    "2027": {
+      "revenue_hundred_million_cny": {
+        "count": 1,
+        "mean": 898.42,
+        "median": 898.42,
+        "min": 898.42,
+        "max": 898.42
+      },
+      "net_profit_hundred_million_cny": {
+        "count": 2,
+        "mean": 32.4115,
+        "median": 32.4115,
+        "min": 28.38,
+        "max": 36.443
+      },
+      "eps_cny": {
+        "count": 1,
+        "mean": 0.48,
+        "median": 0.48,
+        "min": 0.48,
+        "max": 0.48
+      }
+    },
+    "2028": {
+      "revenue_hundred_million_cny": {
+        "count": 1,
+        "mean": 1043.9,
+        "median": 1043.9,
+        "min": 1043.9,
+        "max": 1043.9
+      },
+      "net_profit_hundred_million_cny": {
+        "count": 2,
+        "mean": 56.9574,
+        "median": 56.9574,
+        "min": 56.52,
+        "max": 57.3948
+      },
+      "eps_cny": {
+        "count": 1,
+        "mean": 0.76,
+        "median": 0.76,
+        "min": 0.76,
+        "max": 0.76
+      }
+    }
+  },
+  "limitations": [
+    "公开网页样本不是Wind/Choice/iFinD标准一致预期，覆盖机构不完整。",
+    "部分PDF字段来自搜索命中或转载页，正式入库前应回看PDF表格二次核验。",
+    "2025年旧报告对2025A亏损明显偏乐观，估值时应优先使用2026-04-30之后报告。",
+    "EPS口径可能受最新股本、可转债摊薄和会计政策调整影响，需要统一摊薄股本口径。"
+  ]
+}
