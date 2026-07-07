@@ -20,23 +20,23 @@
 
 ```mermaid
 flowchart TD
-    U[用户研究请求] --> R[/re 统一入口]
+    U["用户研究请求"] --> R["/re 统一入口"]
 
-    R --> C[/rec 公司研究链路]
-    R --> I[/rei 行业研究链路]
+    R --> C["/rec 公司研究链路"]
+    R --> I["/rei 行业研究链路"]
 
-    C --> IC[information-collector]
-    IC --> IP[information-processor]
-    IP --> FA[financial-analyst]
-    FA --> VA[valuation-analyst]
+    C --> IC["information-collector"]
+    IC --> IP["information-processor"]
+    IP --> FA["financial-analyst"]
+    FA --> VA["valuation-analyst"]
 
-    I --> IIC[industry-info-collector]
-    IIC --> IR[industry-researcher]
-    IIC -.必要时验证公司敞口.-> C
+    I --> IIC["industry-info-collector"]
+    IIC --> IR["industry-researcher"]
+    IIC -.->|必要时验证公司敞口| C
 
-    VA --> S[主会话汇总]
+    VA --> S["主会话汇总"]
     IR --> S
-    S --> O[可追溯研究交付]
+    S --> O["可追溯研究交付"]
 ```
 
 ---
