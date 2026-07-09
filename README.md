@@ -29,6 +29,8 @@ flowchart TD
     IC --> IP["information-processor"]
     IP --> FA["financial-analyst"]
     FA --> VA["valuation-analyst"]
+    C --> MCC["market-context-collector"]
+    MCC -.->|价格锚点与市场预期| VA
 
     I --> IIC["industry-info-collector"]
     IIC --> IR["industry-researcher"]
@@ -49,10 +51,11 @@ flowchart TD
 | `information-processor` | 解析 PDF，生成正文、digest、RAG 和摘要比对 | `content.json`、`llm_digest.json`、`rag_chunks.jsonl` |
 | `financial-analyst` | 基于证据包形成经营、盈利质量、现金流和资产质量判断，输出预期差与估值输入 | `analyst_report.json/md` |
 | `valuation-analyst` | 形成估值区间、目标价、隐含回报、边际安全和估值风险 | `valuation_report.json/md` |
+| `market-context-collector` | 通过公开网页检索采集价格锚点、一致预期与市场事件，来源分级并强制置信度上限 | `market_context_package.json/md` |
 | `industry-info-collector` | 组装行业层证据、政策/价格/供需/事件变量和锚点公司验证材料 | `industry_input_package.json/md` |
 | `industry-researcher` | 输出行业归属、供需、景气、竞争格局和公司位置判断 | `industry_research_report.json/md` |
 
-角色边界是硬约束：信息收集员不做投资判断，财务分析员不直接给目标价，估值分析员不替代财务质量判断，行业研究不得只用单一公司表现替代行业结论。
+角色边界是硬约束：信息收集员不做投资判断，财务分析员不直接给目标价，估值分析员不替代财务质量判断，市场上下文只提供公开网页代理证据且置信度上限受限，行业研究不得只用单一公司表现替代行业结论。
 
 ---
 
@@ -68,7 +71,7 @@ flowchart TD
 
 ### 确定性工具与 LLM 判断分离
 
-约 1.5 万行 Python 脚本负责可复现的部分：巨潮公告采集、PDF 解析、digest 分段流水线、RAG 索引构建、财务证据草稿生成。LLM agent 只负责判断（业绩驱动、利润质量、预期差、估值），且必须把规则脚本生成的证据草稿当作待复核输入而非结论。
+约 1.8 万行 Python 脚本负责可复现的部分：巨潮公告采集、PDF 解析、digest 分段流水线、RAG 索引构建、财务证据草稿生成。LLM agent 只负责判断（业绩驱动、利润质量、预期差、估值），且必须把规则脚本生成的证据草稿当作待复核输入而非结论。
 
 ### 研究质量协议
 
@@ -154,7 +157,7 @@ python "overseas_company_research_scripts/run_public_company_research.py" \
 ```text
 multiagents/
 ├── .claude/
-│   ├── agents/                         # 六个研究角色的 subagent 定义
+│   ├── agents/                         # 七个研究角色的 subagent 定义
 │   ├── skills/                         # /re /rec /rei 编排路由入口
 │   └── settings.json                   # 可共享的项目权限配置
 ├── info_collector_scripts/             # A 股财报采集脚本
