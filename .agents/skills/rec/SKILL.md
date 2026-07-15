@@ -1,18 +1,18 @@
 ---
 name: rec
-description: Run the project's company research workflow for one A-share company, reusing local financial report artifacts and dispatching collector, processor, financial analyst, and valuation analyst agents as needed.
+description: Run the project's company research workflow for one A-share company, reusing local financial report artifacts and dispatching collector, processor, financial analyst, valuation analyst, and market context collector agents as needed.
 argument-hint: "支持两种写法：1) target=<公司名或股票代码> [fiscal_year=YYYY] [depth=...]；2) 自然语言，例如：帮我研究中泰股份，重点看现金流"
 ---
 
 # /rec
 
-单家公司研究入口。这个 skill 的职责是把公司研究任务按固定链路分派给对应 custom agents：`information-collector`、`information-processor`、`financial-analyst`、`valuation-analyst`。主会话只做调度、回流和汇总，不直接承担这些角色的具体职能。
+单家公司研究入口。这个 skill 的职责是把公司研究任务按固定链路分派给对应 custom agents：`information-collector`、`information-processor`、`financial-analyst`、`valuation-analyst`、`market-context-collector`。主会话只做调度、回流和汇总，不直接承担这些角色的具体职能。
 
 默认交付不是财报摘要，也不是“继续跟踪若干变量”的模糊判断；默认必须给出可供 PM/IC 讨论的买方结论、参考估值区间、目标价或合理市值区间、相对当前价格的上行/下行空间、核心假设和证伪条件。
 
 ## 执行原则
 
-- 主会话只负责：解析目标、先运行公司研究状态审计器、按 `research_state` 决定该复用/跳过/委派给谁、整合最终结果。
+- 主会话只负责：解析目标、先运行公司研究状态审计器、按 `research_state` 决定该复用/跳过/委派给谁、整合最终结果。市场上下文只能由 `market-context-collector` 使用 Bocha Web Search 采集，主会话不得把网页片段直接包装成投资结论。
 - 主会话不要自己大量 `Read` / `Grep` `content.md`、`llm_digest`、`rag_index/rag_chunks.jsonl` 等长证据；需要核验时，优先要求对应 custom agent 回传精确证据定位。
 - 具体职能必须优先委派给项目内 custom agents，而不是由主会话临时扮演，或退化成 generic subagent。
 - 下列脚本是对应 custom agents 的工具，不是主会话的默认动作：
@@ -45,10 +45,12 @@ argument-hint: "支持两种写法：1) target=<公司名或股票代码> [fisca
 - `report_type`：默认 `annual`。
 - `depth`：`quick`、`standard`、`deep`，默认 `standard`。
 - `focus`：可选重点，如 `cashflow`、`receivable`、`growth`、`governance`、`capex`、`valuation`、`dividend`。
-- `as_of_date`：估值观察日；未指定时按当前日期或最近交易日口径传给 `valuation-analyst`，用于判断估值产物是否 stale。
+- `as_of_date`：全链路知识截止日；未指定时使用当前日期。财报、公告、市场上下文、行情、同行、利率和估值输入只有在可验证日期不晚于该日时才能进入结论。
 - `force_refresh`：默认 `false`；只有用户明确要求重做时才设为 `true`，否则必须复用 `research_state` 标记为 `ready` 的层。
 - `market_price`：可选，用户可指定观察日股价；未指定时由 `valuation-analyst` 先审计是否已有本地/公开行情快照，必要时要求 `information-collector` 补市场数据。
 - `valuation_method`：可选，指定估值方法；未指定时按行业自动选择，银行优先使用 PB-ROE、股息率/DDM、PE 校验，制造业/消费/科技等按业务特征选择 PE、EV/EBITDA、DCF 或 SOTP。
+- `run_market_context`：默认 `true`；使用 Bocha Web Search 采集公开市场叙事、热点、主题映射和反方信号，产物只能作为市场预期代理。
+- `market_context_freshness`：默认 `oneMonth`；传给 Bocha Web Search 的时效参数。
 - `run_industry`：是否在公司研究后做行业位置分析，默认 `false`。
 
 ## 标准执行链路
@@ -74,7 +76,8 @@ python "research_orchestrator_scripts/audit_company_research_state.py" --target 
 - `status=ready`：默认复用，写入最终回复的“复用产物”和 `skipped_actions`，不得重新委派该层角色。
 - `status=partial` / `missing`：只补缺失子产物；例如只缺 RAG 时只委派 `information-processor` 补 RAG，不重跑 PDF 解析和 digest。
 - `status=stale`：只更新时效敏感层，主要是估值、行情和同业数据，不重跑财报处理层。
-- `status=incompatible`：复用旧产物为底稿，只补本次 `depth` 或 `focus` 缺口。
+- `status=incompatible`：复用旧产物为底稿，只补本次 `depth` 或 `focus` 缺口；历史模式下若原因是 `cutoff_unverified`，不得把旧产物作为事实输入。
+- `status=future_incompatible`：产物或上游资料晚于 `as_of_date`，必须隔离，不得作为 stale 参考或底稿传给下游。
 - `status=ambiguous` / `blocked`：先解决目标或上游阻塞，不得继续包装成完整研究。
 
 ### 3. 主会话按 `research_state` 决定是否委派 `information-collector`
@@ -90,7 +93,7 @@ python "research_orchestrator_scripts/audit_company_research_state.py" --target 
 python "info_collector_scripts/run_cninfo_collection.py" --start-date <YYYY-MM-DD> --end-date <YYYY-MM-DD> --report-types annual --keyword <stock-code-or-company> --download
 ```
 
-注意：`start-date` / `end-date` 是披露日期窗口，不是财报所属年度。
+注意：`start-date` / `end-date` 是披露日期窗口，不是财报所属年度；`end-date` 绝不得晚于 `as_of_date`。manifest 中披露日在截止日之后的记录只能进入排除审计，不能下载或复用为本次研究证据。
 
 主会话在这一层只拿回：目标、路径、状态、缺口和建议下一步。
 
@@ -130,6 +133,7 @@ python "info_processor_scripts/compare_digest_with_summary.py" --content-json <c
 - `content.json`、`llm_digest.json/md`、`rag_chunks.jsonl`、`summary_comparison.json/md`。
 - `analyst_report.json/md` 和 `analyst_audit.json`。
 - 用户指定的 `focus` 和 `depth`。
+- `as_of_date`、来源财报 `published_at` 和正式分析输出目录；正式分析必须写入 `as_of/<as_of_date>/`，并输出 `cutoff_audit`。
 
 `financial-analyst` 优先回答：
 
@@ -167,7 +171,7 @@ python "financial_analyst_scripts/run_financial_analysis.py" --report-dir <repor
 
 当财务分析报告和必要估值输入可用后，正式估值判断由 `valuation-analyst` custom agent 承担。传给它：
 
-- 公司、证券代码、交易所、币种和估值日期；
+- 公司、证券代码、交易所、币种和估值日期；该日期同时是所有财务、行情、同行、利率和市场输入的硬性知识截止日；
 - `financial-analyst` 的 `analyst_report.json/md`、`evidence_check.json`、`analyst_audit.json`；
 - `valuation_handoff`、`normalized_financials`、`forecast_boundaries`、财务风险和证伪条件；
 - 市场快照、同行估值、历史估值分位、一致预期或其缺口；
@@ -188,7 +192,25 @@ python "financial_analyst_scripts/run_financial_analysis.py" --report-dir <repor
 
 禁止让 `financial-analyst` 用“还需跟踪”“保持关注”“优质核心资产”替代估值分析员的上述字段。
 
-### 8. 回流补证规则
+### 8. 主会话按 `research_state` 决定是否委派 `market-context-collector`
+
+`market-context-collector` 只负责利用 Bocha Web Search 采集公开网页市场上下文，不做投资结论。若 `research_state.layers.market_context.status=ready` 且日期匹配，默认复用已有 `market_context_package.json/md`；若为 `missing`、`partial` 或 `stale`，委派它运行：
+
+```bash
+python "market_context_collector_scripts/run_market_context_collection.py" --target <公司或代码> --stock-code <code> --company-name <公司名> --industry <行业> --as-of-date <YYYY-MM-DD> --depth <quick|standard|deep> --focus <focus> --strict-cutoff
+```
+
+它必须输出：
+
+- `market_context_package.json/md`：公开市场叙事、热点、主题映射、同行线索、反方信号和质量 Gate。
+- `market_context_sources.json`：可追溯来源表。
+- `collection_audit.json`：查询计划、错误、来源数量、降级状态和凭证处理说明。
+- `raw_search_results.json`：原始搜索结果缓存，供审计和复跑。
+- 所有正式产物必须包含 `cutoff_audit`；未来来源保留在原始审计但不能进入 claim，无日期来源只能作为 discovery-only。
+
+使用边界必须写清楚：网页搜索只能形成 `public_web_search_proxy`，用于识别市场关注点、主题映射和预期代理；不得单独支撑正式一致预期、精确行情涨跌幅、高置信目标价或完整行业数据库结论。若 Bocha API 缺失、失败或只返回低质量来源，最终公司研究必须降级为 `fundamental_only`、`watchlist` 或 `public_proxy_only`，不能把网页片段包装成高置信行动结论。
+
+### 9. 回流补证规则
 
 如果 `financial-analyst` 在分析过程中发现：
 
@@ -206,26 +228,41 @@ python "financial_analyst_scripts/run_financial_analysis.py" --report-dir <repor
 
 则由主会话按缺口回流：市场和同业数据交给 `information-collector`，财务假设边界交回 `financial-analyst`，行业和同行可比性问题交给 `/rei` 或 `industry-researcher`。
 
-### 9. 主会话汇总结果
+### 10. 主会话汇总结果
 
-主会话最后只汇总：
+主会话最后的汇总必须结论前置：先给用户能直接对照的估值判断，再给支撑证据，最后才是可靠性与状态字段。禁止把 `research_state`、调用清单或补数清单堆在开头。
+
+**第一层：结论区（置顶）**
+
+- 一句话结论：当前价格相对合理价值是高估、低估、合理还是只适合观察。
+- 当前价格与位置：现价、市值，以及所处估值位置（PE/PB/PS/股息率历史分位中至少一种；缺分位时用同业倍数或历史均值等可得锚点代替，并标注这是替代锚点）。
+- 三档合理价值：悲观、基准、乐观每股合理价值或合理市值区间，以及采用方法。
+- 上下行空间：三档相对现价的上行/下行百分比。
+- 核心假设：最影响目标价的 3-5 个假设。
+- 估值证伪条件：哪些证据一旦出现，会让目标价上修或下修。
+
+若现价缺失，按 CLAUDE.md 7.2 最佳估计强制条款执行：先回流补行情快照；仍缺失时基于可得锚点给低置信三档，并标注 `price_source=missing`；绝不允许用"数据不足，无法判断"或"估值框架 + 补数请求"代替结论。
+
+**第二层：研究正文**
+
+- 市场上下文：说明 `market_context_package` 路径、网页代理状态、来源数量、质量 Gate 和必须降级使用的边界。
+- 研究结论：只保留能影响估值的业绩驱动、质量判断和核心财务观点。
+- 预期差：市场最可能高估或低估的点，必须对应估值、利润、分红、风险折价、增长假设或公开网页市场叙事代理。
+- 风险与证伪：哪些证据会推翻当前估值或财务结论。
+- 缺口：缺哪些证据或外部数据，以及这些缺口会让目标价偏高还是偏低。
+
+**第三层：可靠性与状态（置于最后，作为限定语）**
 
 - 目标：公司、代码、财年、报告类型。
 - `research_state`：状态文件路径、各层 `status`、`reusable`、`next_actions`。
-- 已调用角色：只列出本次实际调用的 `information-collector` / `information-processor` / `financial-analyst` / `valuation-analyst`。
+- 已调用角色：只列出本次实际调用的 `information-collector` / `information-processor` / `financial-analyst` / `valuation-analyst` / `market-context-collector`。
 - 跳过动作：来自 `research_state.skipped_actions`，说明为什么没有重复执行。
 - 复用产物：关键路径。
 - 新生成产物：关键路径。
-- 一句话结论：当前价格相对估值是高估、低估、合理还是只适合观察。
-- 估值结论：当前价格、参考目标价、合理估值区间、上行/下行空间、采用方法和核心假设。
-- 研究结论：只保留能影响估值的业绩驱动、质量判断和核心财务观点。
-- 预期差：市场最可能高估或低估的点，必须对应估值、利润、分红、风险折价或增长假设。
-- 风险与证伪：哪些证据会推翻当前估值或财务结论。
-- 缺口：缺哪些证据或外部数据，以及这些缺口会让目标价偏高还是偏低。
 - 置信度：高/中/低及原因。
 - 下一步：优先补能改变目标价的证据；不要把普通跟踪清单当作结论。
 
-### 10. 可选行业衔接
+### 11. 可选行业衔接
 
 如果 `run_industry=true`，或者当前公司研究产物将被 `/rei` 当作行业验证样本使用，主会话不要在公司 skill 内硬写行业结论。应把公司产物路径交给 `/rei` 链路，由：
 
@@ -235,7 +272,7 @@ python "financial_analyst_scripts/run_financial_analysis.py" --report-dir <repor
 
 主会话只负责交接和汇总。
 
-### 11. 行业衔接 Handoff Gate
+### 12. 行业衔接 Handoff Gate
 
 当公司研究产物将被用于行业研究验证时，主会话必须要求公司链路补充或明确以下字段；若缺失，也要显式返回缺口：
 

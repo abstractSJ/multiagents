@@ -113,6 +113,23 @@ pip install -r info_processor_scripts/requirements.txt
 - `/rec`：单家公司研究，默认进入财务分析和估值分析。
 - `/rei`：行业/板块研究，默认行业证据优先，锚点公司只作为验证样本。
 
+### 2.5 图形化控制台（研究工坊）
+
+```bash
+python research_console/app.py
+# 浏览器打开 http://127.0.0.1:8600/
+```
+
+`research_console/` 提供 Web 图形入口，与 skill 入口共享同一套脚本与工作区：
+
+- 公司研究默认使用 `coordinator_cli`：每个 run 只启动一个完整 `/rec` Claude Code 主协调会话，继续复用项目 `CLAUDE.md`、skills、custom agents 与既有工作区；
+- 过程可视化由两条通道共同驱动：Claude Code `stream-json` 映射主协调器/Agent 实时事件，周期性 `research_state` audit 映射层状态与新产物；Canvas 舞台、日志、状态卡和产物浏览器同步更新；
+- 原静态 DAG 完整保留为 legacy/fallback：manual（分步手工执行）/ claude_cli（分步调用本机 `claude -p`）/ skip；demo 与 replay 行为不变；
+- `meta.json` 保存 `claude_session_id` 与执行模式，原始流另存 `claude_events.jsonl`；权威事件/meta/research_state 采用单调序号与原子落盘，同公司同财年由工作区租约防止并发覆盖，取消时先收拢并行任务和子进程再发布唯一终态；当前阶段尚不实现服务重启自动 resume 或独立动态研究请求协议。
+- company run 在终态前冻结不可覆盖的 `decision_snapshot.json`，历史运行可在结论区并排查看“当时结论 / 现在回看”；回看记录追加到 `reviews.jsonl`，使用本地腾讯/东方财富日线及缺失时的可审计手工价格，生成描述性股价变化、四段估值区间与三档距离、可选基准超额，并保存证伪状态，固定标注非 TSR、非因果边界。
+
+细节见 `research_console/README.md` 与 `research_console/CONTRACT.md`。
+
 ### 3. 直接运行脚本
 
 ```bash

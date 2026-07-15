@@ -15,16 +15,30 @@ from datetime import datetime, timezone, timedelta
 from pathlib import Path
 from typing import Any
 
-from adapters import (
-    AdapterResult,
-    CompanyEventsFileAdapter,
-    IndustryPublicStatsFileAdapter,
-    IndustrySignalFileAdapter,
-    MarketValuationFileAdapter,
-    PolicyRegulationFileAdapter,
-    filter_records,
-    select_market_snapshot,
-)
+try:
+    # 包导入路径供测试与其他模块复用；避免依赖调用方手工修改 sys.path。
+    from .adapters import (
+        AdapterResult,
+        CompanyEventsFileAdapter,
+        IndustryPublicStatsFileAdapter,
+        IndustrySignalFileAdapter,
+        MarketValuationFileAdapter,
+        PolicyRegulationFileAdapter,
+        filter_records,
+        select_market_snapshot,
+    )
+except ImportError:
+    # 直接运行同目录脚本时保留原有的顶层模块解析方式。
+    from adapters import (
+        AdapterResult,
+        CompanyEventsFileAdapter,
+        IndustryPublicStatsFileAdapter,
+        IndustrySignalFileAdapter,
+        MarketValuationFileAdapter,
+        PolicyRegulationFileAdapter,
+        filter_records,
+        select_market_snapshot,
+    )
 
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]

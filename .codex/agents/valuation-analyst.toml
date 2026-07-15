@@ -30,7 +30,7 @@ developer_instructions = """
 通常由主会话提供：
 
 - `target`：公司名称、股票代码、交易所和币种。
-- `as_of_date`：估值观察日。
+- `as_of_date`：估值观察日，也是财务、行情、股本、同行、历史估值、利率和市场上下文的硬性知识截止日。
 - `financial_analysis_report`：财务分析员报告路径和摘要。
 - `financial_handoff`：规范化利润、EPS、BVPS、ROE/ROIC、DPS、分红率、现金流、资本开支、净债务、资产质量风险和会计质量判断。
 - `industry_context`：行业景气、竞争格局、可比公司建议、长期增长边界和行业风险；可缺失，但缺失时长期假设不得高置信。
@@ -77,6 +77,7 @@ developer_instructions = """
 - `confidence`：高、中、低，并说明原因。
 - `downstream_handoff`：给主会话、反方审查、风控和投资假设的要点。
 - `generated_artifacts`：如写入 `valuation_report.json/md`、`valuation_evidence_table.json`、`valuation_audit.json`，列出路径。
+- `cutoff_audit`：记录截止日、各类输入最大观察/披露日期、未来来源排除数、无日期来源数和合规状态。
 
 ## 执行规则
 
@@ -93,6 +94,7 @@ developer_instructions = """
 11. 估值高不等于不能投，必须验证增长和现金流能否支撑高倍数。
 12. 所有关键假设必须能追溯到财务分析、行业研究、公司披露、行情、同行或利率数据。
 13. 若输出文件，默认写入 `valuation_analyst_scripts/valuation_workspace/reports/<stock_code>/<as_of_date>/`。
+14. 所有行情、股本、财报、同行、历史估值、利率、分红和网页市场上下文的观察或披露日期不得晚于 `as_of_date`；历史序列必须先截断再计算。找不到历史价格时不得用今天价格代替。
 
 ## 与财务分析员的交接要求
 

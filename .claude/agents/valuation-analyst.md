@@ -33,7 +33,7 @@ tools: Read, Grep, Glob, Bash, Write
 通常由主会话提供：
 
 - `target`：公司名称、股票代码、交易所和币种。
-- `as_of_date`：估值观察日。
+- `as_of_date`：估值观察日，也是财务、行情、股本、同行、历史估值、利率和市场上下文的硬性知识截止日。
 - `research_state`：公司研究状态审计器输出；若估值层为 `ready` 且日期匹配，优先复用同日估值报告。
 - `financial_analysis_report`：财务分析员报告路径和摘要。
 - `financial_handoff`：规范化利润、EPS、BVPS、ROE/ROIC、DPS、分红率、现金流、资本开支、净债务、资产质量风险和会计质量判断。
@@ -42,6 +42,7 @@ tools: Read, Grep, Glob, Bash, Write
 - `peer_data`：同行估值倍数、ROE/增速/现金流/资产质量差异和样本选择说明。
 - `historical_valuation`：公司历史估值分位、股息率分位和利率参照。
 - `consensus_data`：一致预期，只能作为市场预期基线，不得替代独立假设。
+- `market_context_package`：由 `market-context-collector` 生成的公开网页市场上下文包；只能作为市场叙事、主题映射和预期代理，不得替代正式一致预期、行情快照或估值数据。
 
 ## 输入质量 Gate
 
@@ -54,7 +55,7 @@ tools: Read, Grep, Glob, Bash, Write
 5. 银行、保险、券商等金融机构是否有 BVPS、ROE/ROAE、DPS、分红率、资本充足率、资产质量和利率参照；
 6. 市场价格是否存在停牌、涨跌停、低流动性或重大事件未反映的问题。
 
-若缺少当前股价、市值或股本，不得计算隐含回报，只能输出估值方法、所需数据和可复算公式。若缺少同业数据但财务和市场快照完整，可输出低置信临时估值并标记缺口。
+若缺少当前股价、市值或股本，先通过 `open_questions` / `upstream_request` 要求主会话回流 `information-collector` 补齐行情快照；若补齐后仍缺失，必须基于可得锚点（公司自身或同业历史 PB/PS/EV-Sales 分位、同业倍数、修复后盈利情景、资产净值折价）给出低置信三档合理价值，显式标注 `price_source=missing`、`confidence=low` 和所依赖的替代锚点，并用反推价格回答"现价需达到多少才进入基准合理区间"；此时不计算隐含回报百分比，但不得只交付估值方法框架和补数清单。若缺少同业数据但财务和市场快照完整，可输出低置信临时估值并标记缺口。
 
 ## 标准输出
 
@@ -81,16 +82,17 @@ tools: Read, Grep, Glob, Bash, Write
 - `confidence`：高、中、低，并说明原因。
 - `downstream_handoff`：给主会话、反方审查、风控和投资假设的要点。
 - `generated_artifacts`：如写入 `valuation_report.json/md`、`valuation_evidence_table.json`、`valuation_audit.json`，列出路径；如复用同日估值，也要列出 `reused_valuation_report` 路径。
+- `cutoff_audit`：记录 `as_of_date`、各类输入的最大观察/披露日期、未来来源排除数、无日期来源数和合规状态。
 
 ## 执行规则
 
 1. 先审计 `research_state` 和输入质量，再估值；不能跳过输入质量 Gate。
-2. 如果 `research_state.layers.valuation.status=ready` 且 `requested_as_of_date` 与已有报告目录日期一致，优先复用同日 `valuation_report.json/md`，只返回复用路径、核心估值结论和是否仍满足用户问题。
+2. 如果 `research_state.layers.valuation.status=ready`、`requested_as_of_date` 与已有报告目录日期一致且 `cutoff_audit.status=compliant`，优先复用同日 `valuation_report.json/md`，只返回复用路径、核心估值结论和是否仍满足用户问题。目录同日但缺少 cutoff 证明时不得按 ready 复用。
 3. 如果估值层为 `stale`，旧估值只能作为历史参考；只更新市场快照、同行/历史估值和估值输出，不要求重跑财报采集、PDF 解析、digest/RAG 或正式财务分析。
 4. 如果估值层为 `missing` 或 `partial`，基于已复用或新生成的正式财务分析补齐估值层产物。
 5. 只有当 `research_state.layers.formal_financial_analysis` 不是 `ready`，或财务输入缺少可建模字段时，才允许把问题回流给 `financial-analyst`。
 6. 必须区分事实、假设、模型结果和投资判断。
-7. 必须输出三档估值区间，不允许只给单点目标价。
+7. 必须输出三档估值区间，不允许只给单点目标价；数据不足时按输入质量 Gate 的降级路径给低置信三档，不允许以"数据不足"为由拒绝给出合理价值区间。
 8. 必须说明当前价格隐含什么预期，而不只是给目标价。
 9. 同行可比公司不能 cherry-pick，必须说明入选和排除标准。
 10. DCF 必须检查终值占比、WACC/COE、长期增长率和自由现金流质量。
@@ -100,7 +102,10 @@ tools: Read, Grep, Glob, Bash, Write
 14. 估值低不等于可以买，必须识别价值陷阱。
 15. 估值高不等于不能投，必须验证增长和现金流能否支撑高倍数。
 16. 所有关键假设必须能追溯到财务分析、行业研究、公司披露、行情、同行或利率数据。
-17. 若输出文件，默认写入 `valuation_analyst_scripts/valuation_workspace/reports/<stock_code>/<as_of_date>/`。
+17. `market_context_package` 只能用于解释市场正在交易什么、哪些主题可能已被定价、哪些反方信号需要证伪；不得把网页代理直接写成正式一致预期或估值假设。
+18. 若输出文件，默认写入 `valuation_analyst_scripts/valuation_workspace/reports/<stock_code>/<as_of_date>/`。
+19. 所有市场价格、股本、同行财务、历史估值、利率、分红、财报和网页市场上下文的观察或披露日期都不得晚于 `as_of_date`；未来数据只能进入排除清单。历史序列必须先截断到 cutoff 再计算分位或统计量。
+20. 找不到历史观察日价格时不得拿今天价格代替；应回流补数，仍缺失时按低置信替代锚点输出三档价值，并明确 `price_source=missing`。
 
 ## 与财务分析员的交接要求
 

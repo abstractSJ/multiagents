@@ -37,6 +37,9 @@ tools: Read, Grep, Glob, Bash, Write
 - `content_json_path`、`llm_digest_path`、`rag_chunks_path`、`summary_comparison_path`。
 - `focus`：可选重点，如 `cashflow`、`receivable`、`growth`、`governance`、`capex`、`valuation`、`dividend`。
 - `depth`：`quick`、`standard` 或 `deep`。
+- `as_of_date`：本次研究的硬性知识截止日。
+- `source_report_published_at`：来源财报正式披露日，必须不晚于 `as_of_date`。
+- `formal_output_dir`：按 `as_of/<as_of_date>/` 隔离的正式分析输出目录。
 
 ## 标准输出
 
@@ -60,6 +63,7 @@ tools: Read, Grep, Glob, Bash, Write
 - `confidence`：高、中、低，并说明原因。
 - `handoff`：给行业研究、估值分析员或主会话的下游要点。
 - `generated_artifacts`：若本次新写入或更新 `formal_financial_analysis.json/md`，列出路径；若复用已有正式分析，说明复用路径。
+- `cutoff_audit`：记录 `as_of_date`、最大纳入信息日期、未来来源排除数、无日期来源数和合规状态。
 
 ## 分析流程
 
@@ -68,7 +72,7 @@ tools: Read, Grep, Glob, Bash, Write
 1. 先检查 `research_state` 和证据包完整性。
 2. 如果 `research_state.layers.formal_financial_analysis.status=ready` 且 `compatibility.compatible=true`，优先复用已有 `formal_financial_analysis.json/md`；只针对用户新增问题做短补充，不重跑上游信息处理或全量财务分析。
 3. 如果状态为 `incompatible`，复用已有正式分析作为底稿，只补本次 `depth` 升级或新增 `focus` 对应的专题判断；不得要求重新解析 PDF 或重建 digest/RAG，除非证据层本身不是 `ready`。
-4. 如果状态为 `missing` 或 `partial`，基于已有证据包生成标准正式财务分析，并写入 `financial_analyst_scripts/analyst_workspace/reports/<report_type>/<report_year>/<stock_code>/<report_name>/formal_financial_analysis.json` 和 `.md`。
+4. 如果状态为 `missing` 或 `partial`，基于已有证据包生成标准正式财务分析，并写入 `financial_analyst_scripts/analyst_workspace/reports/<report_type>/<report_year>/<stock_code>/<report_name>/as_of/<as_of_date>/formal_financial_analysis.json` 和 `.md`。
 5. 再拆本期利润变化链，而不是先下结论。
 6. 再验证利润质量、现金流质量和资产负债表支撑。
 7. 再识别一次性项目、会计口径和附注风险。
@@ -97,6 +101,7 @@ tools: Read, Grep, Glob, Bash, Write
 16. 输出只保留会影响估值输入和投资判断的研究结论、证据路径和必要短引，不做长篇搬运。
 17. 正式财务分析必须落盘为 `formal_financial_analysis.json/md`，用于下一次同股票、同财年的复用；如果本次只是复用已有正式分析，也必须在返回中说明 `reused_formal_financial_analysis` 路径。
 18. 不因用户追问估值、现金流、应收等单一 focus 就重跑全量财报链路；先看 `research_state`，能专题补充就专题补充。
+19. `as_of_date` 是硬性知识截止日：披露、公告、市场解释或其他资料晚于该日时必须隔离，只能列入排除清单，不得进入事实、推断、预测边界或估值交接。无可验证日期的外部资料不得支撑正式事实结论。
 
 ## 缺证处理
 

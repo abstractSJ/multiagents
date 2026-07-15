@@ -57,7 +57,17 @@
   - `valuation_audit.json`
   - `upstream_request.json`
 
-### 2.5 行业输入包层
+### 2.5 市场上下文层
+- 工作区：`market_context_collector_scripts/collector_workspace`
+- 单家公司市场上下文目录：`market_context_collector_scripts/collector_workspace/packages/<stock_code>/<as_of_date>/`
+- 关键产物：
+  - `market_context_package.json`
+  - `market_context_package.md`
+  - `market_context_sources.json`
+  - `collection_audit.json`
+  - `raw_search_results.json`
+
+### 2.6 行业输入包层
 - 工作区：`industry_info_collector_scripts/collector_workspace`
 - 关键产物：
   - `industry_input_package.json`
@@ -70,15 +80,17 @@
 ### 3.1 公司研究
 当用户要“研究某家公司”“分析某个股票/公司”时：
 1. 走公司研究链路；
-2. 先运行 `research_orchestrator_scripts/audit_company_research_state.py` 生成 `research_state`，盘点财报、解析、digest/RAG、财务分析和估值产物；
+2. 先运行 `research_orchestrator_scripts/audit_company_research_state.py` 生成 `research_state`，盘点财报、解析、digest/RAG、财务分析、估值和市场上下文产物；
 3. 严格按照 `research_state.reusable`、`research_state.skipped_actions` 和 `research_state.next_actions` 调度；只有 `missing`、`partial`、`stale` 或 `incompatible` 的层允许补跑，默认 `force_refresh=false`，不得无脑全重跑；
 4. 调度：
    - `information-collector`
    - `information-processor`
    - `financial-analyst`
    - `valuation-analyst`
-5. 估值分析默认是公司研究最终交付的一部分；若市场价格、同行估值、历史分位或利率/分红数据不足，主会话必须回流补证或让 `valuation-analyst` 明确输出低置信估值边界 / 补数请求，不能让财务分析员代替估值分析员硬给目标价。
-6. 如果用户明确要求顺带看行业位置，再扩展到：
+   - `market-context-collector`
+5. 市场上下文默认是公司研究最终交付的一部分；在现有条件下只能使用 Bocha Web Search 采集公开网页市场叙事、热点、主题映射、同行线索和反方信号，并明确标记为 `public_web_search_proxy`，不得把网页结果包装成正式一致预期或高置信事实。
+6. 估值分析默认是公司研究最终交付的一部分；若市场价格、同行估值、历史分位或利率/分红数据不足，主会话必须回流补证或让 `valuation-analyst` 明确输出低置信估值边界 / 补数请求，不能让财务分析员代替估值分析员硬给目标价。
+7. 如果用户明确要求顺带看行业位置，再扩展到：
    - `industry-info-collector`
    - `industry-researcher`
 
@@ -148,6 +160,10 @@
 - 负责基于财务分析、行业约束、市场价格、同业估值、历史分位和利率/分红数据形成估值区间、目标价、隐含回报、边际安全和估值风险。
 - 估值分析员不替代财务分析员判断财务质量，也不直接给最终买卖指令；其职责是把基本面证据转成可复核的定价判断。
 
+### market-context-collector
+- 负责使用 Bocha Web Search 采集公开网页市场上下文，形成市场热点、公司叙事、主题映射、同行线索、反方信号和来源质量 Gate。
+- 市场上下文采集员不做投资结论、不替代正式一致预期、不替代行情或估值数据库；其产物只能作为 `public_web_search_proxy` 和市场预期代理，由下游降级使用。
+
 ### industry-info-collector
 - 对应 `信息收集员2.md`，负责优先收集和组装行业层资料，再按需接入公司资料，形成行业研究输入包。
 - 公司财报与公司分析在这一层属于验证和映射材料，不是行业结论的唯一或默认起点。
@@ -168,6 +184,8 @@
 - `info_processor_scripts/compare_digest_with_summary.py`
 - `financial_analyst_scripts/run_financial_analysis.py`
 - `valuation_analyst_scripts/valuation_workspace`
+- `market_context_collector_scripts/run_market_context_collection.py`
+- `market_context_collector_scripts/collector_workspace`
 
 ### 行业研究常用脚本
 - `industry_info_collector_scripts/run_industry_collection.py`
@@ -184,28 +202,61 @@
 8. 如果 `WebFetch` 不合适、受限或失败，先检查是否存在更合适的本地 skill / CLI 工作流，再决定降级方案。
 9. 当前阶段公司研究默认拉起估值分析员；风控、买卖决策、投资经理等后半链路角色仍不默认拉起。
 10. 行业研究中的估值仍是可选扩展；但 `/rec` 公司研究必须把估值作为默认交付环节。
-11. 若任务已落入既有角色边界，不得使用 generic / general-purpose / Explore 代替 custom agents；公司估值必须由 `valuation-analyst` 承担，不得让 `financial-analyst` 用财务总结代替目标价和估值区间；行业研究不得默认先启动公司研究链路，必须先让行业层证据成形，再按需引入锚点公司做验证与映射，除非用户明确只要公司视角切入的快速预研。
+11. 若任务已落入既有角色边界，不得使用 generic / general-purpose / Explore 代替 custom agents；公司估值必须由 `valuation-analyst` 承担，不得让 `financial-analyst` 用财务总结代替目标价和估值区间；市场上下文必须由 `market-context-collector` 使用 Bocha Web Search 采集并标记为公开网页代理，不得由主会话直接摘网页片段写投资判断；行业研究不得默认先启动公司研究链路，必须先让行业层证据成形，再按需引入锚点公司做验证与映射，除非用户明确只要公司视角切入的快速预研。
 
 ## 7. 结果输出底线
 
-每次正式研究输出至少要说明：
+输出的第一价值是"可用结论"，不是"可靠性声明"。任何正式研究都必须先给出用户能直接对照的判断，再解释这个判断有多可靠。禁止把状态字段、置信度免责声明或补数清单堆在开头，让用户翻很久都找不到"现在贵还是便宜、上行还是下行"。
+
+### 7.1 结论区：必须置顶，先给可用结论
+
+公司研究的输出**开头**必须是结论区，至少包含：
+
+- 一句话判断：当前价格相对合理价值是高估、低估、合理还是只适合观察；
+- 当前价格与位置：现价、市值，以及所处估值位置（PE/PB/PS/股息率的历史分位中至少一种；缺分位时用同业倍数或历史均值等可得锚点代替，并标注这是替代锚点）；
+- 三档合理价值：悲观、基准、乐观每股合理价值或合理市值区间；
+- 上下行空间：三档相对现价的上行/下行百分比；
+- 核心假设：最影响目标价的 3-5 个假设；
+- 估值证伪条件：哪些证据一旦出现，会让目标价上修或下修。
+
+### 7.2 最佳估计强制条款：缺数据也要给结论，不许只给框架
+
+只要是公司研究，估值分析员就必须给出 7.1 的三档合理价值和相对现价的上下行空间。绝不允许把"估值方法框架 + 数据缺口清单 + 补数请求"当作最终交付——那是过程草稿，不是给用户的结论。
+
+- 若现价、市值或股本缺失：主会话必须先回流 `information-collector` 补齐行情快照，再让 `valuation-analyst` 出估值，而不是就地降级成框架。
+- 若补齐后仍拿不到现价：允许基于可得锚点（公司自身或同业历史 PB/PS/EV-Sales 分位、同业倍数、修复后盈利情景、资产净值折价）给出**低置信**三档合理价值，但必须显式标注 `price_source=missing`、`confidence=low` 和所依赖的替代锚点。
+- 任何情况下都必须给出一个可对照的价格位置判断：至少要能回答"现价需达到多少才进入基准合理区间""现价相对可得锚点是偏贵还是偏便宜"。用反推价格代替精确目标价是允许的，输出"数据不足，无法判断"则不允许。
+- `research_status` / `delivery_status` 允许写成"低置信"或"带缺口"，但结论本身不能缺席；低置信是对结论的限定，不是拒绝给结论的理由。
+
+### 7.3 研究正文：支撑结论的证据与判断
+
+结论区之后，列出支撑上述判断的研究正文：
+
+- 若是公司研究，市场上下文：`market_context_package` 路径、公开网页代理状态、来源数量、质量 Gate、反方信号是否覆盖，以及哪些结论必须降级使用；
+- 研究结论：只保留能影响估值输入的业绩驱动、利润与现金流质量、资产质量判断；
+- 预期差：市场最可能高估或低估的点，必须对应估值、利润、分红、风险折价或增长假设；
+- 风险与证伪：哪些证据会推翻当前估值或财务结论；
+- 当前还有哪些缺口，以及这些缺口会让目标价偏高还是偏低。
+
+### 7.4 可靠性与状态：置于结论之后，作为限定语而非开场白
+
+以下字段用于说明证据强度和交付成熟度，是对结论的**限定**。它们只能出现在结论区和研究正文之后，不得占据输出开头，也不得替代结论本身：
+
 - 当前目标；
 - `research_state`：状态文件路径、各层状态、`reusable`、`skipped_actions` 和 `next_actions`；
 - 已调用哪些角色，且只列出本次实际调用的角色；
 - 跳过了哪些动作，以及跳过原因；
 - 复用了哪些关键产物；
 - 新生成了哪些关键产物；
-- 若是公司研究，必须说明估值结论：当前价格、目标价或合理市值区间、悲观/基准/乐观三档、上行/下行空间、核心假设和估值证伪条件；
 - `research_status`：完整研究、部分研究、框架草稿或证据不足；
 - `delivery_status`：高置信完整报告、低置信完整报告或带缺口完整报告；
 - `quantification_status`：已量化变量数量、未量化的关键变量；
 - `comparability_status`：是否完成纵向和横向比较；
 - `actionability_status`：可执行、仅观察、需补证或不可执行；
-- 当前还有哪些缺口；
-- 结论的置信度；
+- 结论的置信度及原因；
 - 建议下一步。
 
-其中 `research_status` 描述证据强度与研究成熟度，`delivery_status` 描述最终交付形态。即使 `research_status` 仍是“部分研究”或“框架草稿”，只要已经命中终止条件，最终对用户的输出也必须是一份完整报告，而不是残缺的中间产物。
+其中 `research_status` 描述证据强度与研究成熟度，`delivery_status` 描述最终交付形态。即使 `research_status` 仍是"部分研究"或"框架草稿"，只要已经命中终止条件，最终对用户的输出也必须是一份**结论前置的完整报告**，而不是把状态字段和补数清单堆在开头的中间产物。可靠性可以低，结论不能缺。
 
 正式行业研究不得只描述静态产业链。凡涉及景气、周期、拐点、供需改善、价格变化、龙头受益、行业分化或事件冲击判断，必须同时满足以下要求：
 - 尽量给出核心量化指标，而不是只给定性形容词；

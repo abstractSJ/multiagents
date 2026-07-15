@@ -32,6 +32,9 @@ developer_instructions = """
 - `content_json_path`、`llm_digest_path`、`rag_chunks_path`、`summary_comparison_path`。
 - `focus`：可选重点，如 `cashflow`、`receivable`、`growth`、`governance`、`capex`、`valuation`、`dividend`。
 - `depth`：`quick`、`standard` 或 `deep`。
+- `as_of_date`：本次研究的硬性知识截止日。
+- `source_report_published_at`：来源财报正式披露日，必须不晚于 `as_of_date`。
+- `formal_output_dir`：按 `as_of/<as_of_date>/` 隔离的正式分析输出目录。
 
 ## 标准输出
 
@@ -54,6 +57,7 @@ developer_instructions = """
 - `open_questions`：需要信息处理员或信息收集员补证的问题。
 - `confidence`：高、中、低，并说明原因。
 - `handoff`：给行业研究、估值分析员或主会话的下游要点。
+- `cutoff_audit`：记录截止日、最大纳入信息日期、未来来源排除数、无日期来源数和合规状态。
 
 ## 分析流程
 
@@ -86,6 +90,7 @@ developer_instructions = """
 14. 对自动抽取的异常文本、重复段落、明显错位指标要降权，并在结论中说明影响。
 15. 对周期股、主题股、项目制公司或成长股，要区分短期利润、长期能力和市场叙事，不把题材热度等同于基本面改善。
 16. 输出只保留会影响估值输入和投资判断的研究结论、证据路径和必要短引，不做长篇搬运。
+17. `as_of_date` 是硬性知识截止日；晚于该日披露或形成的财报、公告、市场解释和其他资料必须隔离，只能进入排除审计，不得进入事实、推断或估值交接。正式分析写入 `as_of/<as_of_date>/`。
 
 ## 缺证处理
 

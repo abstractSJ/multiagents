@@ -15,17 +15,32 @@ import argparse
 import json
 from pathlib import Path
 
-from industry_info_collector import (
-    DEFAULT_FINANCIAL_MANIFEST,
-    DEFAULT_SEED_DATA,
-    DEFAULT_WORKSPACE,
-    ClassificationOverride,
-    CollectionPaths,
-    EventStudyRequest,
-    IndustryInfoCollector,
-    default_financial_analysis_path,
-    default_processor_content_path,
-)
+try:
+    # 作为包导入时使用相对路径，保证测试与其他 Python 模块可直接复用本入口。
+    from .industry_info_collector import (
+        DEFAULT_FINANCIAL_MANIFEST,
+        DEFAULT_SEED_DATA,
+        DEFAULT_WORKSPACE,
+        ClassificationOverride,
+        CollectionPaths,
+        EventStudyRequest,
+        IndustryInfoCollector,
+        default_financial_analysis_path,
+        default_processor_content_path,
+    )
+except ImportError:
+    # 直接执行脚本时没有包上下文，回退到同目录绝对导入以保持原 CLI 用法兼容。
+    from industry_info_collector import (
+        DEFAULT_FINANCIAL_MANIFEST,
+        DEFAULT_SEED_DATA,
+        DEFAULT_WORKSPACE,
+        ClassificationOverride,
+        CollectionPaths,
+        EventStudyRequest,
+        IndustryInfoCollector,
+        default_financial_analysis_path,
+        default_processor_content_path,
+    )
 
 
 def optional_path(value: str | None) -> Path | None:
@@ -91,11 +106,13 @@ def parse_args() -> argparse.Namespace:
     args = parser.parse_args()
 
     has_company_context = bool(args.stock_code and args.company_name and args.fiscal_year)
-    is_theme_event_study = args.deliverable_type == "theme_event_study"
+    has_partial_company_context = bool(args.stock_code or args.company_name or args.fiscal_year) and not has_company_context
     has_industry_target = bool(args.target or args.industry_name)
 
-    if not has_company_context and not (is_theme_event_study and has_industry_target):
-        parser.error("公司验证模式需要同时提供 --stock-code、--company-name、--fiscal-year；纯行业事件研究模式至少需要 --deliverable-type theme_event_study 和 --target 或 --industry-name。")
+    if has_partial_company_context:
+        parser.error("公司验证模式需要同时提供 --stock-code、--company-name、--fiscal-year。")
+    if not has_company_context and not has_industry_target:
+        parser.error("纯行业模式至少需要 --target 或 --industry-name。")
 
     return args
 

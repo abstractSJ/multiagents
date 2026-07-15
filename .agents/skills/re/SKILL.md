@@ -12,7 +12,7 @@ argument-hint: "mode=company|industry target=<公司/股票代码/行业> [fisca
 
 - 主会话只负责：解析请求、先盘点已有产物、分派 custom agents、处理回流、汇总结果；公司研究必须继承 `/rec` 的 `research_state` 预检和复用规则。
 - 具体职能必须优先委派给项目内已定义的 custom agents，而不是让主会话临时扮演角色。
-- 若任务已落入既有角色边界，必须优先使用：`information-collector`、`information-processor`、`financial-analyst`、`industry-info-collector`、`industry-researcher`，不得用 generic / general-purpose / Explore 代替。
+- 若任务已落入既有角色边界，必须优先使用：`information-collector`、`information-processor`、`financial-analyst`、`valuation-analyst`、`market-context-collector`、`industry-info-collector`、`industry-researcher`，不得用 generic / general-purpose / Explore 代替。
 - 只有当任务不落入任何已定义角色边界时，才退回 generic subagent 或主会话直接处理。
 - `/re` 自身不展开长文档全文，不在这一层生成正式公司或行业研究正文。
 - 如果用户没有特别说明，行业研究默认 `deliverable_type=investment_research`，即以“可供 PM/IC 讨论的买方行业研究”为默认交付，而不是默认只交行业框架。
@@ -55,7 +55,8 @@ argument-hint: "mode=company|industry target=<公司/股票代码/行业> [fisca
    - `information-processor`
    - `financial-analyst`
    - `valuation-analyst`
-5. 对 `status=ready` 的公司研究层，`/re` 只能复用并汇总，不能升级为重新执行；只有 `missing`、`partial`、`stale`、`incompatible` 或用户显式 `force_refresh=true` 时才允许补跑对应层。
+   - `market-context-collector`
+5. 对 `status=ready` 的公司研究层，`/re` 只能复用并汇总，不能升级为重新执行；只有 `missing`、`partial`、`stale`、`incompatible` 或用户显式 `force_refresh=true` 时才允许补跑对应层。市场上下文层即使 `ready`，也只能作为公开网页预期代理，不得被包装成正式一致预期。
 6. 主会话最后只汇总结果，不在 `/re` 这一层自己做财务研究判断。
 
 ### 行业研究
@@ -91,6 +92,7 @@ argument-hint: "mode=company|industry target=<公司/股票代码/行业> [fisca
 - `financial_analyst_scripts/analyst_workspace/reports/.../<report>/analyst_report.json`
 - `financial_analyst_scripts/analyst_workspace/reports/.../<report>/formal_financial_analysis.json`
 - `valuation_analyst_scripts/valuation_workspace/reports/<stock_code>/<as_of_date>/valuation_report.json`
+- `market_context_collector_scripts/collector_workspace/packages/<stock_code>/<as_of_date>/market_context_package.json`
 - `industry_info_collector_scripts/collector_workspace/packages/<code>/<date>/industry_input_package.json`
 
 ## 行业研究降级协议
@@ -112,7 +114,14 @@ argument-hint: "mode=company|industry target=<公司/股票代码/行业> [fisca
 
 ## 输出要求
 
-最终回复至少包含：
+最终回复必须结论前置：先给用户能直接对照的判断，再给支撑证据，最后才是可靠性与状态字段。禁止把 `research_state`、调用清单或补数清单堆在开头。
+
+**结论区（置顶）**：
+
+- 公司研究：按 `/rec` 第 10 节和 CLAUDE.md 7.1 输出一句话估值判断、现价与估值位置、三档合理价值、上下行空间、核心假设和估值证伪条件；缺数据时按 CLAUDE.md 7.2 最佳估计强制条款给低置信结论，不许只给框架。
+- 行业研究：先给当前最可用的行业判断（景气方向、关键变量位置、受益/受损映射或"证据不足下的临时判断"），再交代这个判断靠什么支撑、还缺什么。
+
+**可靠性与状态（置于结论和研究正文之后）**：
 
 - 当前目标。
 - `deliverable_type`。
@@ -130,7 +139,7 @@ argument-hint: "mode=company|industry target=<公司/股票代码/行业> [fisca
 - `next_best_step`：如果结果被降级，明确写出接下来是继续补证、用替代证据给临时判断，还是转成观察清单。
 - 建议下一步。
 
-如果证据不足，必须明确降级为“初步框架”“证据包”或“部分结论”，不能把半成品包装成高置信最终研究。若最终输出包含行业研究结论，必须带上关键跟踪变量和证伪条件，不能只输出泛化风险提示。
+如果证据不足，必须明确降级为“初步框架”“证据包”或“部分结论”，不能把半成品包装成高置信最终研究；但降级只限定结论强度，不允许因此取消结论区、把状态字段挪回开头。若最终输出包含行业研究结论，必须带上关键跟踪变量和证伪条件，不能只输出泛化风险提示。
 
 对 `theme_event_study`，主会话必须特别区分：
 - 事件事实；

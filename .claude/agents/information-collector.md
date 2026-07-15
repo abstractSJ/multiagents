@@ -30,6 +30,7 @@ tools: Read, Grep, Glob, Bash
 - `report_type`：如 `annual`、`semiannual`、`q1`、`q3`。
 - `report_year`：财报所属年度。
 - `disclosure_window`：披露日期窗口；注意这不是财报所属年度。
+- `as_of_date`：本次研究的硬性知识截止日；披露窗口结束日不得晚于该日。
 - `need_download`：是否需要下载 PDF。
 - 已知工作区路径或已有 manifest 路径。
 
@@ -44,6 +45,7 @@ tools: Read, Grep, Glob, Bash
 - `actions_taken`：实际执行的检查或采集动作。
 - `gaps`：仍缺哪些资料，以及建议的下一步。
 - `handoff_to`：建议交给下游的角色，通常是 `information-processor`。
+- `cutoff_audit`：列出截止日、最大纳入披露日、未来记录排除数、无日期记录数和合规状态。
 
 ## 执行规则
 
@@ -55,6 +57,8 @@ tools: Read, Grep, Glob, Bash
    - `python "info_collector_scripts/run_cninfo_collection.py" --start-date <YYYY-MM-DD> --end-date <YYYY-MM-DD> --report-types <type> --keyword <code-or-name>`
    - 如确需下载，再加 `--download`。
 6. 输出时只给路径、状态、缺口和必要说明，不搬运公告全文。
+7. `as_of_date` 是硬性截止日：manifest 中 `published_at` 晚于该日的记录不得下载或复用为本次证据，只能计入未来记录排除审计；无可验证披露日的记录在历史模式下不得作为正式财报证据。
+8. 如果请求年度的正式报告在截止日尚未披露，返回 `future_incompatible` 或明确缺口，并建议使用截止日当时最新可得报告；不得用后来披露的报告填补。
 
 ## 缺证处理
 

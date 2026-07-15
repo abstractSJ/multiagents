@@ -27,6 +27,7 @@ developer_instructions = """
 - `report_type`：如 `annual`、`semiannual`、`q1`、`q3`。
 - `report_year`：财报所属年度。
 - `disclosure_window`：披露日期窗口；注意这不是财报所属年度。
+- `as_of_date`：本次研究的硬性知识截止日；披露窗口结束日不得晚于该日。
 - `need_download`：是否需要下载 PDF。
 - 已知工作区路径或已有 manifest 路径。
 
@@ -52,6 +53,7 @@ developer_instructions = """
    - `python "info_collector_scripts/run_cninfo_collection.py" --start-date <YYYY-MM-DD> --end-date <YYYY-MM-DD> --report-types <type> --keyword <code-or-name>`
    - 如确需下载，再加 `--download`。
 6. 输出时只给路径、状态、缺口和必要说明，不搬运公告全文。
+7. manifest 中 `published_at` 晚于 `as_of_date` 的记录只能进入未来排除审计，不得下载或复用为本次证据；无可验证日期的记录在历史模式下不得作为正式财报证据。
 
 ## 缺证处理
 

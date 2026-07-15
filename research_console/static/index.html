@@ -1,0 +1,257 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>研究工坊 · 多智能体投研控制台</title>
+<meta name="description" content="轻量级多智能体投研任务状态控制台">
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='7' fill='%23191b17'/%3E%3Crect x='7' y='8' width='18' height='13' fill='%23d8ff5f'/%3E%3Crect x='10' y='11' width='12' height='7' fill='%23191b17'/%3E%3Crect x='13' y='23' width='6' height='3' fill='%23d8ff5f'/%3E%3C/svg%3E">
+<link rel="stylesheet" href="style.css">
+<script>
+/* 首屏渲染前恢复主题，避免页面在浅色与深色之间闪烁。 */
+(function () {
+  var saved = null;
+  try { saved = localStorage.getItem('research_console_theme'); } catch (error) { /* 隐私模式下安全降级 */ }
+  var theme = saved === 'light' || saved === 'dark'
+    ? saved
+    : (window.matchMedia && window.matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light');
+  document.documentElement.dataset.theme = theme;
+})();
+</script>
+</head>
+<body>
+<header class="topbar">
+  <div class="brand" aria-label="研究工坊">
+    <span class="brand-mark" aria-hidden="true"><i></i><i></i><i></i></span>
+    <span>
+      <strong>研究工坊</strong>
+      <small>LIGHT RESEARCH CONSOLE</small>
+    </span>
+  </div>
+
+  <nav id="modeTabs" class="mode-tabs" aria-label="运行模式">
+    <button class="mode-tab active" type="button" data-mode="company">公司</button>
+    <button class="mode-tab" type="button" data-mode="industry">行业</button>
+    <button class="mode-tab" type="button" data-mode="demo">演示</button>
+    <button class="mode-tab" type="button" data-mode="replay">回放</button>
+  </nav>
+
+  <div class="top-actions">
+    <label class="run-picker">
+      <span>历史运行</span>
+      <select id="runSelect" aria-label="历史运行"><option value="">暂无运行</option></select>
+    </label>
+    <button id="refreshRuns" class="icon-button" type="button" title="刷新运行历史" aria-label="刷新运行历史">↻</button>
+    <span id="healthBadge" class="health-badge" data-tone="neutral"><i></i><span>服务检查中</span></span>
+    <button id="themeToggle" class="icon-button" type="button" title="切换主题" aria-label="切换主题">◐</button>
+  </div>
+</header>
+
+<section class="control-strip" aria-label="运行参数">
+  <form id="companyForm" class="run-form">
+    <label class="field field-main"><span>公司 / 股票代码</span><input id="companyTarget" required placeholder="例如 600519 或 贵州茅台"></label>
+    <label class="field"><span>财年</span><input id="companyYear" type="number" min="2000" max="2035" placeholder="最新"></label>
+    <label class="field"><span>报告</span><select id="companyReport"><option value="annual">年报</option><option value="semiannual">半年报</option><option value="q1">一季报</option><option value="q3">三季报</option></select></label>
+    <label class="field"><span>深度</span><select id="companyDepth"><option value="quick">快速</option><option value="standard" selected>标准</option><option value="deep">深入</option></select></label>
+    <label class="field field-main"><span>关注点</span><input id="companyFocus" placeholder="可选，例如盈利质量与分红"></label>
+    <label class="field"><span>基准日</span><input id="companyDate" type="date"></label>
+    <label class="check-field"><input id="companyMarket" type="checkbox" checked><span>市场上下文</span></label>
+    <label class="check-field"><input id="companyForce" type="checkbox"><span>强制重跑</span></label>
+    <label class="field"><span>执行模式</span><select id="companyLlm"><option value="coordinator_cli" selected>完整协调会话</option><option value="manual">手工分步</option><option value="claude_cli">Claude 分步</option><option value="skip">跳过 LLM</option></select></label>
+    <div class="form-actions"><button id="auditButton" class="button secondary" type="button">只体检</button><button class="button primary" type="submit">开始研究</button></div>
+  </form>
+
+  <form id="industryForm" class="run-form hidden">
+    <label class="field field-main"><span>行业 / 主题</span><input id="industryTarget" required placeholder="例如 工业气体 / 稀土出口管制"></label>
+    <label class="field field-main"><span>行业名称</span><input id="industryName" placeholder="可选"></label>
+    <label class="field"><span>交付类型</span><select id="industryDeliverable"><option value="investment_research">投资研究</option><option value="theme_event_study">事件研究</option></select></label>
+    <label class="field"><span>锚点代码</span><input id="anchorCode" placeholder="可选"></label>
+    <label class="field"><span>锚点公司</span><input id="anchorName" placeholder="可选"></label>
+    <label class="field"><span>锚点财年</span><input id="anchorYear" type="number" min="2000" max="2035" placeholder="可选"></label>
+    <label class="field"><span>基准日</span><input id="industryDate" type="date"></label>
+    <label class="field"><span>执行模式</span><select id="industryLlm"><option value="manual">手工分步</option><option value="claude_cli">Claude 分步</option><option value="skip">跳过 LLM</option></select></label>
+    <div class="form-actions"><button class="button primary" type="submit">开始行业研究</button></div>
+  </form>
+
+  <form id="demoForm" class="run-form compact hidden">
+    <p>不访问网络，用一段脚本化流程检查任务路径、状态侧栏与接口连接。</p>
+    <button class="button primary" type="submit">播放演示</button>
+  </form>
+
+  <form id="replayForm" class="run-form compact hidden">
+    <label class="field field-main"><span>股票代码</span><input id="replayCode" required placeholder="例如 600519"></label>
+    <label class="field"><span>财年</span><input id="replayYear" type="number" min="2000" max="2035" required placeholder="2025"></label>
+    <button class="button primary" type="submit">生成回放</button>
+  </form>
+</section>
+
+<main class="app-shell">
+  <section class="workspace" aria-label="任务路径">
+    <div class="scene-card">
+      <div class="scene-copy">
+        <span class="eyebrow">AGENT ROOM</span>
+        <h1 id="sceneTitle">调度员与研究团队待命</h1>
+        <p id="sceneSubtitle">前排调度员接收目标，后方七名专业 Agent 在各自工作站完成研究链路。</p>
+        <div class="scene-meta">
+          <span id="sceneStatus" class="status-chip" data-status="idle">○ 空闲</span>
+          <span id="sceneOwner">调度官待命</span>
+          <span id="sceneTool">无活动工具</span>
+        </div>
+      </div>
+
+      <!--
+        多 Agent 像素房间：所有角色常驻同一空间，前排调度员负责接收任务与分派。
+        插画仍是单个内联 SVG，不加载图片、Canvas 或游戏引擎；JS 只切换活跃/完成状态类。
+      -->
+      <svg class="pixel-scene pixel-room" viewBox="0 0 640 400" role="img" aria-label="宝可梦式像素研究室，八名 Agent 在各自电脑前协作">
+        <defs>
+          <pattern id="roomTiles" width="24" height="24" patternUnits="userSpaceOnUse">
+            <path d="M24 0H0V24" fill="none" stroke="currentColor" stroke-opacity=".08" stroke-width="1"/>
+          </pattern>
+          <symbol id="agentDesk" viewBox="0 0 132 104">
+            <rect class="station-mat" x="1" y="1" width="130" height="102" rx="3"/>
+            <rect class="station-desk" x="16" y="27" width="100" height="28"/>
+            <rect class="station-desk-edge" x="12" y="51" width="108" height="8"/>
+            <rect class="station-monitor" x="45" y="10" width="42" height="31"/>
+            <rect class="station-screen" x="50" y="15" width="32" height="19"/>
+            <rect class="station-screen-line" x="54" y="19" width="19" height="4"/>
+            <rect class="station-screen-line" x="54" y="26" width="24" height="3"/>
+            <rect class="station-monitor" x="62" y="41" width="8" height="8"/>
+            <rect class="agent-shadow" x="45" y="92" width="42" height="6"/>
+            <rect class="agent-hair" x="54" y="56" width="25" height="10"/>
+            <rect class="agent-face" x="51" y="64" width="31" height="19"/>
+            <rect class="agent-eye" x="57" y="69" width="4" height="4"/>
+            <rect class="agent-eye" x="72" y="69" width="4" height="4"/>
+            <rect class="agent-shirt" x="47" y="81" width="39" height="16"/>
+            <rect class="agent-arm" x="41" y="84" width="8" height="12"/>
+            <rect class="agent-arm" x="84" y="84" width="8" height="12"/>
+            <rect class="station-beacon" x="112" y="9" width="9" height="9"/>
+          </symbol>
+        </defs>
+
+        <rect class="room-wall" x="0" y="0" width="640" height="400" rx="18"/>
+        <rect class="room-floor" x="12" y="54" width="616" height="334"/>
+        <rect x="12" y="54" width="616" height="334" fill="url(#roomTiles)"/>
+        <rect class="room-board" x="206" y="12" width="228" height="31"/>
+        <text class="room-board-text" x="320" y="33" text-anchor="middle">MULTI-AGENT RESEARCH LAB</text>
+        <rect class="room-window" x="34" y="13" width="116" height="29"/>
+        <rect class="room-window-glow" x="42" y="20" width="100" height="15"/>
+        <rect class="room-window" x="490" y="13" width="116" height="29"/>
+        <rect class="room-window-glow" x="498" y="20" width="100" height="15"/>
+
+        <g class="agent-station" data-agent="information-collector" style="--agent-color:#3f69d8" transform="translate(18 66)">
+          <title>信息采集员 · 财报与基础资料</title><use href="#agentDesk" width="132" height="104"/>
+          <text class="station-label" x="66" y="118" text-anchor="middle">信息采集</text>
+        </g>
+        <g class="agent-station" data-agent="information-processor" style="--agent-color:#188b67" transform="translate(175 66)">
+          <title>信息处理员 · PDF、Digest 与 RAG</title><use href="#agentDesk" width="132" height="104"/>
+          <text class="station-label" x="66" y="118" text-anchor="middle">信息处理</text>
+        </g>
+        <g class="agent-station" data-agent="financial-analyst" style="--agent-color:#7359c7" transform="translate(332 66)">
+          <title>财务分析员 · 盈利、现金流与资产质量</title><use href="#agentDesk" width="132" height="104"/>
+          <text class="station-label" x="66" y="118" text-anchor="middle">财务分析</text>
+        </g>
+        <g class="agent-station" data-agent="valuation-analyst" style="--agent-color:#d86532" transform="translate(489 66)">
+          <title>估值分析员 · 合理价值与目标价</title><use href="#agentDesk" width="132" height="104"/>
+          <text class="station-label" x="66" y="118" text-anchor="middle">估值分析</text>
+        </g>
+
+        <g class="agent-station" data-agent="market-context-collector" style="--agent-color:#d94f52" transform="translate(72 194)">
+          <title>市场上下文采集员 · 热点、叙事与反方信号</title><use href="#agentDesk" width="132" height="104"/>
+          <text class="station-label" x="66" y="118" text-anchor="middle">市场上下文</text>
+        </g>
+        <g class="agent-station" data-agent="industry-info-collector" style="--agent-color:#548641" transform="translate(254 194)">
+          <title>行业信息采集员 · 政策、供需与价格证据</title><use href="#agentDesk" width="132" height="104"/>
+          <text class="station-label" x="66" y="118" text-anchor="middle">行业采集</text>
+        </g>
+        <g class="agent-station" data-agent="industry-researcher" style="--agent-color:#c85e91" transform="translate(436 194)">
+          <title>行业研究员 · 景气、格局与公司映射</title><use href="#agentDesk" width="132" height="104"/>
+          <text class="station-label" x="66" y="118" text-anchor="middle">行业研究</text>
+        </g>
+
+        <!-- 调度员位于最前排，桌面更宽并朝向全部工作站。 -->
+        <g class="agent-station orchestrator-station lead" data-agent="orchestrator" style="--agent-color:#d19a22" transform="translate(218 286)">
+          <title>调度员 · 路由、分派、回流与最终交付</title>
+          <rect class="command-shadow" x="18" y="67" width="168" height="11"/>
+          <rect class="command-desk" x="0" y="39" width="204" height="27"/>
+          <rect class="command-panel" x="48" y="24" width="108" height="22"/>
+          <rect class="command-screen" x="57" y="29" width="90" height="11"/>
+          <rect class="agent-hair" x="90" y="0" width="25" height="10"/>
+          <rect class="agent-face" x="87" y="8" width="31" height="19"/>
+          <rect class="agent-eye" x="93" y="13" width="4" height="4"/>
+          <rect class="agent-eye" x="108" y="13" width="4" height="4"/>
+          <rect class="agent-shirt" x="83" y="25" width="39" height="21"/>
+          <rect class="command-beacon" x="179" y="12" width="12" height="12"/>
+          <text class="orchestrator-label" x="102" y="94" text-anchor="middle">调度员 / ORCHESTRATOR</text>
+        </g>
+      </svg>
+    </div>
+
+    <section class="path-card">
+      <header class="section-head">
+        <div><span class="eyebrow">TASK ROUTE</span><h2>任务路径</h2></div>
+        <span id="pathCount" class="counter">0 项</span>
+      </header>
+      <div id="pathViewport" class="path-viewport">
+        <svg id="pathLines" class="path-lines" aria-hidden="true"></svg>
+        <div id="pathNodes" class="path-nodes"><div class="empty-state">运行开始后显示任务节点与路径连线</div></div>
+      </div>
+    </section>
+  </section>
+
+  <aside class="status-rail" aria-label="运行状态侧栏">
+    <section class="rail-section run-summary">
+      <div class="section-head compact-head">
+        <div><span class="eyebrow">RUN STATUS</span><h2>当前运行</h2></div>
+        <span id="connectionBadge" class="connection-badge" data-status="idle">未连接</span>
+      </div>
+      <dl class="summary-grid">
+        <div><dt>RUN ID</dt><dd id="runId">—</dd></div>
+        <div><dt>状态</dt><dd id="runStatus">空闲</dd></div>
+        <div><dt>模式</dt><dd id="runMode">—</dd></div>
+        <div><dt>事件</dt><dd id="eventCount">0</dd></div>
+      </dl>
+      <div class="summary-actions">
+        <button id="cancelRun" class="text-button danger hidden" type="button">取消运行</button>
+        <button id="copyRun" class="text-button" type="button">复制 run_id</button>
+      </div>
+    </section>
+
+    <section id="layerSection" class="rail-section">
+      <div class="section-head compact-head"><div><span class="eyebrow">RESEARCH STATE</span><h2>研究层状态</h2></div></div>
+      <div id="layerList" class="layer-list"></div>
+    </section>
+
+    <section class="rail-section task-section">
+      <div class="section-head compact-head"><div><span class="eyebrow">LIVE TASKS</span><h2>任务状态</h2></div><span id="taskCount" class="counter">0</span></div>
+      <div id="taskList" class="task-list"><div class="empty-state small">暂无任务</div></div>
+    </section>
+
+    <details class="rail-section disclosure" open>
+      <summary><span><b>事件</b><small id="latestEvent">等待事件</small></span><span>⌄</span></summary>
+      <div id="eventList" class="event-list"><div class="empty-state small">暂无事件</div></div>
+    </details>
+
+    <details class="rail-section disclosure">
+      <summary><span><b>产物</b><small id="artifactCount">0 个文件</small></span><span>⌄</span></summary>
+      <div id="artifactList" class="artifact-list"><div class="empty-state small">暂无产物</div></div>
+    </details>
+
+    <details id="conclusionSection" class="rail-section disclosure conclusion-section">
+      <summary><span><b>当时结论 / 现在回看</b><small id="conclusionHint">运行完成后显示</small></span><span>⌄</span></summary>
+      <div id="conclusionBody" class="conclusion-body"><div class="empty-state small">暂无结论</div></div>
+    </details>
+  </aside>
+</main>
+
+<div id="toastHost" class="toast-host" aria-live="polite"></div>
+<div id="modal" class="modal hidden" role="dialog" aria-modal="true" aria-labelledby="modalTitle">
+  <div class="modal-panel">
+    <header><h2 id="modalTitle">产物</h2><button id="modalClose" class="icon-button" type="button" aria-label="关闭">×</button></header>
+    <div id="modalBody" class="modal-body"></div>
+  </div>
+</div>
+
+<script type="module" src="app.js"></script>
+</body>
+</html>
