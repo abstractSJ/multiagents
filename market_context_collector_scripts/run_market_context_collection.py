@@ -83,7 +83,7 @@ def collect_market_context(
 
     参数：
         request: 市场上下文采集请求。
-        project_root: 项目根目录。
+        project_root: Project root.
         output_dir: 显式输出目录；为空时写入默认 collector_workspace。
         count_per_query: 每个 query 请求的搜索结果数量。
         freshness: 搜索时效范围；None 表示不向 Bocha 发送 freshness。严格截止模式会强制使用 None。
@@ -112,7 +112,16 @@ def collect_market_context(
         query = str(query_item["query"])
         cache_path = query_cache_path(project_root, request, query, effective_freshness, count_per_query)
         if dry_run:
-            raw_results.append({"query": query, "bucket": query_item["bucket"], "results": [], "from_cache": False})
+            raw_results.append(
+                {
+                    "query": query,
+                    "bucket": query_item["bucket"],
+                    "results": [],
+                    "from_cache": False,
+                    "retrieval_mode": "planned",
+                    "query_status": "dry_run",
+                }
+            )
             continue
         if cache_path.exists() and not force_refresh:
             cached = load_json(cache_path)
@@ -123,15 +132,35 @@ def collect_market_context(
                         "bucket": query_item["bucket"],
                         "results": cached.get("results", []),
                         "from_cache": True,
+                        "retrieval_mode": "cache",
+                        "query_status": "success",
                     }
                 )
                 continue
         if client is None:
-            raw_results.append({"query": query, "bucket": query_item["bucket"], "results": [], "from_cache": False})
+            raw_results.append(
+                {
+                    "query": query,
+                    "bucket": query_item["bucket"],
+                    "results": [],
+                    "from_cache": False,
+                    "retrieval_mode": "unavailable",
+                    "query_status": "error",
+                }
+            )
             continue
         try:
             results = client.search(query, count=count_per_query, freshness=effective_freshness)
-            raw_results.append({"query": query, "bucket": query_item["bucket"], "results": results, "from_cache": False})
+            raw_results.append(
+                {
+                    "query": query,
+                    "bucket": query_item["bucket"],
+                    "results": results,
+                    "from_cache": False,
+                    "retrieval_mode": "live",
+                    "query_status": "success",
+                }
+            )
             write_json(
                 cache_path,
                 {
@@ -144,8 +173,19 @@ def collect_market_context(
             )
         except RuntimeError as error:
             errors.append({"query": query, "error": str(error)})
-            raw_results.append({"query": query, "bucket": query_item["bucket"], "results": [], "from_cache": False})
+            raw_results.append(
+                {
+                    "query": query,
+                    "bucket": query_item["bucket"],
+                    "results": [],
+                    "from_cache": False,
+                    "retrieval_mode": "live",
+                    "query_status": "error",
+                }
+            )
 
+    cutoff_policy = build_cutoff_policy(request)
+    complete_source_table = build_source_table(raw_results, cutoff_policy=cutoff_policy)
     package = build_market_context_package(
         request,
         query_plan,
@@ -153,9 +193,18 @@ def collect_market_context(
         errors,
         dry_run=dry_run,
         effective_freshness=effective_freshness,
+        complete_source_table=complete_source_table,
     )
     sources = {"cutoff_audit": package["cutoff_audit"], "sources": package["source_table"]}
-    audit = build_collection_audit(request, query_plan, raw_results, errors, package, dry_run=dry_run)
+    audit = build_collection_audit(
+        request,
+        query_plan,
+        raw_results,
+        errors,
+        package,
+        complete_source_table=complete_source_table,
+        dry_run=dry_run,
+    )
 
     write_package_files(target_output_dir, package, sources, audit, raw_results)
     return {
@@ -182,6 +231,7 @@ def build_market_context_package(
     *,
     dry_run: bool = False,
     effective_freshness: str | None = "oneMonth",
+    complete_source_table: list[dict[str, Any]] | None = None,
 ) -> dict[str, Any]:
     """把搜索结果整理成市场上下文包。
 
@@ -192,20 +242,31 @@ def build_market_context_package(
         errors: 搜索错误列表。
         dry_run: 是否为仅规划模式。
         effective_freshness: 实际发送给搜索服务的 freshness；严格模式下为 None。
+        complete_source_table: 可选的完整去重来源表；传入后可避免重复归一化，同时供 claim 和审计使用。
     返回值：
-        `market_context_package.json` 的内容。
+        `market_context_package.json` 的内容；严格截止模式下 source_table 只包含可进入 claim 的来源。
+
+    为什么这样做：
+        严格历史研究需要同时满足两类边界：审计必须知道搜索发现过哪些未来或无日期来源，模型侧却不能
+        看到这些来源的标题、摘要或链接，以免后续综合误用。完整来源表因此只参与内部 claim、质量 Gate
+        和 cutoff 审计，写入 package 的来源表则执行单独的模型侧过滤。
     """
     cutoff_policy = build_cutoff_policy(request)
-    source_table = build_source_table(raw_results, cutoff_policy=cutoff_policy)
-    claims = build_claims(source_table, strict_cutoff=request.strict_cutoff)
-    cutoff_audit = build_cutoff_audit(source_table, claims, cutoff_policy)
+    full_source_table = (
+        complete_source_table
+        if complete_source_table is not None
+        else build_source_table(raw_results, cutoff_policy=cutoff_policy)
+    )
+    claims = build_claims(full_source_table, strict_cutoff=request.strict_cutoff)
+    cutoff_audit = build_cutoff_audit(full_source_table, claims, cutoff_policy)
     quality_gate = build_quality_gate(
-        source_table,
+        full_source_table,
         claims,
         errors,
         cutoff_audit=cutoff_audit,
         dry_run=dry_run,
     )
+    source_table = select_model_facing_sources(full_source_table, strict_cutoff=request.strict_cutoff)
     status = decide_package_status(source_table, quality_gate, errors, dry_run=dry_run)
 
     package = {
@@ -223,22 +284,25 @@ def build_market_context_package(
         "cutoff_audit": cutoff_audit,
         "usage_boundary": {
             "data_type": "public_web_search_proxy",
-            "can_support": ["市场叙事识别", "市场关注点代理", "公开反方信号", "主题映射候选"],
-            "cannot_support_alone": ["正式一致预期", "精确行情和涨跌幅", "高置信目标价", "完整行业数据库结论"],
-            "why": "v1 只使用网页搜索结果，必须把搜索片段视为公开叙事和弱代理，而不是数据库级事实。",
+            "can_support": ["Market narrative identification", "Market-attention proxy", "Public contrary signals", "Theme-mapping candidates"],
+            "cannot_support_alone": ["Formal consensus expectations", "Precise market prices and returns", "High-confidence target prices", "Complete industry-database conclusions"],
+            "why": "v1 uses web-search results only. Treat snippets as public narratives and weak proxies, not database-grade facts.",
         },
         "collection_scope": {
             "query_count": len(query_plan),
             "source_count": len(source_table),
+            "total_discovered_source_count": len(full_source_table),
+            "eligible_source_count": sum(1 for source in full_source_table if source.get("eligible_for_claim")),
+            "excluded_source_count": sum(1 for source in full_source_table if not source.get("eligible_for_claim")),
             "search_engine": "bocha_web_search",
             "depth": request.depth,
             "strict_cutoff": request.strict_cutoff,
             "cutoff_date": cutoff_policy["cutoff_date"],
             "effective_freshness": effective_freshness,
             "freshness_assumption": (
-                "strict_cutoff 模式不发送 freshness，由本地按 published_at 执行截止日过滤。"
+                "strict_cutoff mode omits freshness and applies local cutoff filtering using published_at."
                 if request.strict_cutoff
-                else "由命令行 freshness 参数控制；默认 oneMonth。"
+                else "Controlled by the command-line freshness parameter; default: oneMonth."
             ),
         },
         "market_regime": summarize_market_regime(claims),
@@ -270,13 +334,13 @@ def build_cutoff_policy(request: MarketContextRequest) -> dict[str, Any]:
     """
     cutoff_text = str(request.as_of_date or "").strip()
     if request.strict_cutoff and not cutoff_text:
-        raise ValueError("strict_cutoff=true 时必须提供 as_of_date。")
+        raise ValueError("as_of_date is required when strict_cutoff=true.")
     if not cutoff_text:
         cutoff_text = datetime.now(timezone.utc).date().isoformat()
     try:
         cutoff = date.fromisoformat(cutoff_text)
     except ValueError as error:
-        raise ValueError("as_of_date 必须使用 YYYY-MM-DD 格式。") from error
+        raise ValueError("as_of_date must use YYYY-MM-DD format.") from error
     mode = "strict" if request.strict_cutoff else "non_strict"
     return {
         "strict_cutoff": request.strict_cutoff,
@@ -385,6 +449,26 @@ def build_source_table(
                 }
             )
     return sources
+
+
+def select_model_facing_sources(
+    complete_source_table: list[dict[str, Any]], *, strict_cutoff: bool
+) -> list[dict[str, Any]]:
+    """生成允许写入模型侧标准产物的来源表。
+
+    参数：
+        complete_source_table: 搜索发现并去重后的完整来源表。
+        strict_cutoff: 是否启用严格历史截止。
+    返回值：
+        非严格模式返回完整来源表；严格模式仅返回 eligible_for_claim=true 的来源。
+
+    为什么这样做：
+        非严格模式需要保持既有来源发现语义；严格模式则必须阻断未来和无日期来源进入 package、Markdown
+        与 sources JSON。过滤仅发生在输出边界，完整列表仍可用于 cutoff 计数和紧凑排除索引。
+    """
+    if not strict_cutoff:
+        return list(complete_source_table)
+    return [source for source in complete_source_table if source.get("eligible_for_claim") is True]
 
 
 def classify_source(url: str, title: str = "") -> tuple[str, str]:
@@ -502,15 +586,15 @@ def build_claim_text(source: dict[str, Any]) -> str:
     snippet = str(source.get("snippet", "")).strip()
     signal_type = source.get("signal_type", "market_narrative")
     if signal_type == "contradictory_signal":
-        prefix = "公开网页结果提示存在反方或风险信号"
+        prefix = "Public web results indicate a contrary or risk signal"
     elif signal_type == "theme_mapping":
-        prefix = "公开网页结果提示存在主题映射线索"
+        prefix = "Public web results indicate a theme-mapping signal"
     elif signal_type == "market_regime":
-        prefix = "公开网页结果提示存在市场风格或热点线索"
+        prefix = "Public web results indicate a market-style or hotspot signal"
     elif signal_type == "peer_context":
-        prefix = "公开网页结果提示存在同行比较线索"
+        prefix = "Public web results indicate a peer-comparison signal"
     else:
-        prefix = "公开网页结果提示存在市场叙事线索"
+        prefix = "Public web results indicate a market-narrative signal"
     detail = snippet or title
     return f"{prefix}：{detail[:160]}"
 
@@ -544,32 +628,32 @@ def infer_fundamental_bridge(source: dict[str, Any]) -> dict[str, str]:
     signal_type = source.get("signal_type", "")
     if signal_type == "theme_mapping":
         return {
-            "variable": "相关业务收入占比、订单、客户认证、毛利率和产能",
+            "variable": "Revenue mix, orders, customer certification, gross margin, and capacity for the relevant business",
             "status": "needs_company_validation",
-            "why": "主题热度必须落到业务敞口和利润弹性，否则只能作为题材映射。",
+            "why": "Theme momentum must map to business exposure and earnings sensitivity; otherwise it remains theme-only mapping.",
         }
     if signal_type == "market_regime":
         return {
-            "variable": "估值倍数、股息率、风险偏好和资金风格",
+            "variable": "Valuation multiples, dividend yield, risk appetite, and capital style",
             "status": "needs_price_and_valuation_validation",
-            "why": "市场风格会影响估值折溢价，但不能单独证明基本面改善。",
+            "why": "Market style can affect valuation premiums or discounts but cannot independently prove fundamental improvement.",
         }
     if signal_type == "contradictory_signal":
         return {
-            "variable": "收入增速、利润率、现金流、资产质量或行业价格",
+            "variable": "Revenue growth, margins, cash flow, asset quality, or industry pricing",
             "status": "use_as_falsifier_candidate",
-            "why": "反方信号应进入证伪清单，后续由财务、估值或行业证据验证。",
+            "why": "Contrary signals should enter the falsification checklist for later validation with financial, valuation, or industry evidence.",
         }
     if signal_type == "peer_context":
         return {
-            "variable": "同行估值、ROE、增速、业务纯度和风险差异",
+            "variable": "Peer valuation, ROE, growth, business purity, and risk differences",
             "status": "needs_peer_validation",
-            "why": "网页同行线索只能帮助找样本，不能替代正式横向比较。",
+            "why": "Web peer signals can help identify samples but cannot replace formal cross-sectional comparison.",
         }
     return {
-        "variable": "利润差、增长差、风险折价差或分红差",
+        "variable": "Differences in earnings, growth, risk discount, or dividends",
         "status": "needs_financial_validation",
-        "why": "市场叙事需要回到可建模财务变量，才能进入投资假设。",
+        "why": "Market narratives must map back to modelable financial variables before entering the investment thesis.",
     }
 
 
@@ -836,14 +920,78 @@ def build_open_questions(quality_gate: dict[str, Any]) -> list[str]:
     """
     questions: list[str] = []
     if quality_gate.get("market_expectation_status") == "missing":
-        questions.append("未取得公开网页市场预期代理，投资假设只能降级为 fundamental_only。")
+        questions.append("No public-web market-expectations proxy was obtained; the investment thesis must be downgraded to fundamental_only.")
     if not quality_gate.get("has_contradictory_search"):
-        questions.append("缺少有效反方搜索结果，不能确认主要风险已经被覆盖。")
+        questions.append("Valid contrary search results are missing, so coverage of major risks cannot be confirmed.")
     if quality_gate.get("source_tier_counts", {}).get("S", 0) == 0:
-        questions.append("缺少官方或交易所级来源，网页结果不能单独支撑事实性结论。")
+        questions.append("Official or exchange-level sources are missing; web results cannot independently support factual conclusions.")
     if not quality_gate.get("can_support_actionable_thesis"):
-        questions.append("市场上下文只能作为公开叙事代理，后续必须结合财务、估值和同行比较降级使用。")
+        questions.append("Market context is only a public-narrative proxy and must be used with financial, valuation, and peer evidence at reduced confidence.")
     return questions
+
+
+def build_query_telemetry(
+    query_plan: list[dict[str, Any]], raw_results: list[dict[str, Any]]
+) -> dict[str, int]:
+    """汇总缓存、实时请求和返回状态遥测。
+
+    参数：
+        query_plan: 计划执行的查询列表。
+        raw_results: 每条查询的完整原始结果分组。
+    返回值：
+        查询总数、缓存命中数、实时请求数、成功数、空结果数、失败数和 dry-run 数。
+
+    为什么这样做：
+        成功查询允许返回零条结果，因此 successful_query_count 与 empty_query_count 可以重叠；前者衡量
+        查询调用是否正常完成，后者衡量完成后是否拿到候选来源。把两者分开可区分服务故障与正常空结果。
+    """
+    successful_groups = [group for group in raw_results if group.get("query_status") == "success"]
+    return {
+        "total_query_count": len(query_plan),
+        "cache_query_count": sum(1 for group in raw_results if group.get("retrieval_mode") == "cache"),
+        "live_query_count": sum(1 for group in raw_results if group.get("retrieval_mode") == "live"),
+        "successful_query_count": len(successful_groups),
+        "empty_query_count": sum(1 for group in successful_groups if not group.get("results")),
+        "failed_query_count": sum(1 for group in raw_results if group.get("query_status") == "error"),
+        "dry_run_query_count": sum(1 for group in raw_results if group.get("query_status") == "dry_run"),
+    }
+
+
+def build_excluded_source_index(complete_source_table: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """生成不含摘要正文的紧凑排除来源索引。
+
+    参数：
+        complete_source_table: 完整来源表。
+    返回值：
+        eligible_for_claim=false 来源的最小审计字段列表，不包含 snippet 或 query。
+
+    为什么这样做：
+        审计需要证明哪些未来或无日期来源被排除，但复制搜索摘要会扩大产物并增加误用风险。索引只保留
+        定位、日期、截止分类和排除原因，足以复核过滤结果，同时不会把被排除内容重新暴露给模型侧包。
+    """
+    excluded: list[dict[str, Any]] = []
+    for source in complete_source_table:
+        if source.get("eligible_for_claim") is True:
+            continue
+        cutoff_status = str(source.get("cutoff_status", ""))
+        exclusion_reason = {
+            "future": "published_after_cutoff",
+            "undated": "published_date_unverified",
+        }.get(cutoff_status, "not_eligible_for_claim")
+        excluded.append(
+            {
+                "source_id": source.get("source_id"),
+                "bucket": source.get("bucket"),
+                "url": source.get("url"),
+                "published_at": source.get("published_at"),
+                "normalized_published_date": source.get("normalized_published_date"),
+                "cutoff_status": cutoff_status,
+                "source_tier": source.get("source_tier"),
+                "usage_limit": source.get("usage_limit"),
+                "exclusion_reason": exclusion_reason,
+            }
+        )
+    return excluded
 
 
 def build_collection_audit(
@@ -853,6 +1001,7 @@ def build_collection_audit(
     errors: list[dict[str, str]],
     package: dict[str, Any],
     *,
+    complete_source_table: list[dict[str, Any]],
     dry_run: bool,
 ) -> dict[str, Any]:
     """生成采集审计文件。
@@ -863,21 +1012,29 @@ def build_collection_audit(
         raw_results: 原始搜索结果。
         errors: 搜索错误列表。
         package: 市场上下文包。
+        complete_source_table: 过滤模型侧来源之前的完整来源表。
         dry_run: 是否为仅规划模式。
     返回值：
-        审计字典。
+        审计字典，包含完整来源计数、紧凑排除索引和查询执行遥测。
     """
+    eligible_source_count = sum(1 for source in complete_source_table if source.get("eligible_for_claim"))
+    excluded_source_index = build_excluded_source_index(complete_source_table)
     return {
         "schema_version": "1.1",
         "generated_at": datetime.now(timezone.utc).isoformat(),
         "request": asdict(request),
         "search_engine": "bocha_web_search",
-        "credential_policy": "API Key 仅从 BOCHA_WEB_SEARCH_API_KEY 环境变量读取，未写入产物。",
+        "credential_policy": "The API key is read only from the BOCHA_WEB_SEARCH_API_KEY environment variable and is not written to artifacts.",
         "dry_run": dry_run,
         "query_plan": query_plan,
         "query_count": len(query_plan),
         "raw_result_groups": len(raw_results),
+        "query_telemetry": build_query_telemetry(query_plan, raw_results),
         "source_count": len(package.get("source_table", [])),
+        "total_discovered_source_count": len(complete_source_table),
+        "eligible_source_count": eligible_source_count,
+        "excluded_source_count": len(complete_source_table) - eligible_source_count,
+        "excluded_source_index": excluded_source_index,
         "errors": errors,
         "status": package.get("status"),
         "cutoff_audit": package.get("cutoff_audit", {}),
@@ -920,41 +1077,41 @@ def render_market_context_markdown(package: dict[str, Any]) -> str:
     """
     target = package.get("target", {})
     lines = [
-        f"# {target.get('company_name') or target.get('stock_code') or target.get('target') or '未知目标'} 市场上下文包",
+        f"# {target.get('company_name') or target.get('stock_code') or target.get('target') or 'Unknown Target'} Market Context Package",
         "",
-        f"- 状态：{package.get('status')}",
-        f"- 观察日：{target.get('as_of_date') or '未指定'}",
-        f"- 数据边界：{package.get('usage_boundary', {}).get('data_type')}",
-        f"- 来源数量：{package.get('collection_scope', {}).get('source_count', 0)}",
-        f"- 严格截止：{package.get('cutoff_audit', {}).get('strict_cutoff', False)}",
-        f"- 截止日：{package.get('cutoff_audit', {}).get('cutoff_date', '未指定')}",
-        f"- 截止日前可用来源：{package.get('cutoff_audit', {}).get('accepted_source_count', 0)}",
-        f"- 最大置信度：{package.get('quality_gate', {}).get('max_confidence')}",
+        f"- Status: {package.get('status')}",
+        f"- As-of date: {target.get('as_of_date') or 'Not specified'}",
+        f"- Data boundary: {package.get('usage_boundary', {}).get('data_type')}",
+        f"- Source count: {package.get('collection_scope', {}).get('source_count', 0)}",
+        f"- Strict cutoff: {package.get('cutoff_audit', {}).get('strict_cutoff', False)}",
+        f"- Cutoff date: {package.get('cutoff_audit', {}).get('cutoff_date', 'Not specified')}",
+        f"- Accepted pre-cutoff sources: {package.get('cutoff_audit', {}).get('accepted_source_count', 0)}",
+        f"- Maximum confidence: {package.get('quality_gate', {}).get('max_confidence')}",
         "",
-        "## 市场风格线索",
+        "## Market Style Signals",
     ]
     for item in package.get("market_regime", {}).get("hotspot_signals", []):
         lines.append(f"- {item}")
-    lines.extend(["", "## 目标公司市场叙事代理"])
+    lines.extend(["", "## Target Company Market-Narrative Proxy"])
     narrative = package.get("target_market_narrative", {})
     for item in narrative.get("bull_case_proxy", []):
-        lines.append(f"- 看多/关注线索：{item}")
+        lines.append(f"- Bullish / attention signal: {item}")
     for item in narrative.get("bear_case_proxy", []):
-        lines.append(f"- 反方/风险线索：{item}")
-    lines.extend(["", "## 主题映射"])
+        lines.append(f"- Contrary / risk signal: {item}")
+    lines.extend(["", "## Theme Mapping"])
     for item in package.get("theme_mapping", []):
-        lines.append(f"- {item.get('theme_proxy')}；使用边界：{item.get('usage_limit')}")
-    lines.extend(["", "## 反方与证伪信号"])
+        lines.append(f"- {item.get('theme_proxy')}; usage boundary: {item.get('usage_limit')}")
+    lines.extend(["", "## Contrary and Falsification Signals"])
     for item in package.get("contradictory_signals", []):
         lines.append(f"- {item.get('signal')}（{item.get('usage')}）")
-    lines.extend(["", "## 质量 Gate", ""])
+    lines.extend(["", "## Quality Gate", ""])
     gate = package.get("quality_gate", {})
     for key, value in gate.items():
         lines.append(f"- {key}: {value}")
-    lines.extend(["", "## 缺口", ""])
+    lines.extend(["", "## Gaps", ""])
     for item in package.get("open_questions", []):
         lines.append(f"- {item}")
-    lines.extend(["", "## 来源表", ""])
+    lines.extend(["", "## Source Table", ""])
     for source in package.get("source_table", [])[:30]:
         lines.append(
             f"- [{source.get('source_id')}] {source.get('title')} — {source.get('url')}"
@@ -968,7 +1125,7 @@ def default_package_dir(project_root: Path, request: MarketContextRequest) -> Pa
     """生成默认市场上下文包目录。
 
     参数：
-        project_root: 项目根目录。
+        project_root: Project root.
         request: 市场上下文采集请求。
     返回值：
         默认输出目录。
@@ -984,7 +1141,7 @@ def query_cache_path(
     """生成 query 级缓存路径。
 
     参数：
-        project_root: 项目根目录。
+        project_root: Project root.
         request: 市场上下文采集请求。
         query: 搜索关键词。
         freshness: 实际搜索时效范围；None 表示请求中省略 freshness。
@@ -1093,29 +1250,29 @@ def build_parser() -> argparse.ArgumentParser:
     返回值：
         ArgumentParser。
     """
-    parser = argparse.ArgumentParser(description="使用 Bocha Web Search 采集公司市场上下文，并生成 market_context_package。")
-    parser.add_argument("--target", default="", help="公司名或股票代码。")
-    parser.add_argument("--stock-code", default="", help="股票代码。")
-    parser.add_argument("--company-name", default="", help="公司名称。")
-    parser.add_argument("--industry", default="", help="行业或板块。")
-    parser.add_argument("--as-of-date", default="", help="观察日，例如 2026-07-08。")
-    parser.add_argument("--depth", choices=["quick", "standard", "deep"], default="standard", help="采集深度。")
-    parser.add_argument("--focus", default="", help="用户关注点，多个重点用逗号分隔。")
+    parser = argparse.ArgumentParser(description="Collect company market context with Bocha Web Search and generate market_context_package.")
+    parser.add_argument("--target", default="", help="Company name or stock code.")
+    parser.add_argument("--stock-code", default="", help="Stock code.")
+    parser.add_argument("--company-name", default="", help="Company name.")
+    parser.add_argument("--industry", default="", help="Industry or sector.")
+    parser.add_argument("--as-of-date", default="", help="As-of date, e.g. 2026-07-08.")
+    parser.add_argument("--depth", choices=["quick", "standard", "deep"], default="standard", help="Collection depth.")
+    parser.add_argument("--focus", default="", help="User focus; separate multiple topics with commas.")
     parser.add_argument(
         "--strict-cutoff",
         action="store_true",
-        help="启用历史观察日严格截断；要求提供 --as-of-date，并自动省略 Bocha freshness。",
+        help="Enable strict historical as-of-date cutoff; requires --as-of-date and automatically omits Bocha freshness.",
     )
     parser.add_argument(
         "--freshness",
         default="oneMonth",
-        help="Bocha freshness 参数，默认 oneMonth；传 none 可省略该字段，strict-cutoff 会强制省略。",
+        help="Bocha freshness parameter; default: oneMonth. Pass none to omit it; strict-cutoff always omits it.",
     )
-    parser.add_argument("--count-per-query", type=int, default=8, help="每个 query 的返回条数。")
-    parser.add_argument("--project-root", default=str(PROJECT_ROOT), help="项目根目录。")
-    parser.add_argument("--output-dir", default="", help="显式输出目录。")
-    parser.add_argument("--dry-run", action="store_true", help="只生成查询计划和空包，不调用外部搜索接口。")
-    parser.add_argument("--force-refresh", action="store_true", help="忽略 query 缓存，重新调用搜索接口。")
+    parser.add_argument("--count-per-query", type=int, default=8, help="Number of results per query.")
+    parser.add_argument("--project-root", default=str(PROJECT_ROOT), help="Project root.")
+    parser.add_argument("--output-dir", default="", help="Explicit output directory.")
+    parser.add_argument("--dry-run", action="store_true", help="Generate only the query plan and empty package without calling the external search API.")
+    parser.add_argument("--force-refresh", action="store_true", help="Ignore query cache and call the search API again.")
     return parser
 
 

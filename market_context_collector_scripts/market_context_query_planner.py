@@ -13,7 +13,29 @@ import re
 from typing import Any
 
 
-DEPTH_QUERY_LIMITS = {"quick": 12, "standard": 32, "deep": 72}
+DEPTH_QUERY_LIMITS = {"quick": 12, "standard": 20, "deep": 72}
+
+# quick 与 standard 都需要在有限额度内维持六类核心搜索覆盖。standard 把一半额度明确留给
+# 公司叙事与反方信号，因为这两类结果最直接影响市场预期代理和后续证伪质量；剩余额度再覆盖
+# 市场风格、行业、主题与同行，避免按原始生成顺序截断后把后置桶整体挤出查询计划。
+DEPTH_BUCKET_QUOTAS = {
+    "quick": {
+        "market_hotspots": 3,
+        "target_narrative": 3,
+        "sector_context": 2,
+        "theme_mapping": 1,
+        "peer_context": 1,
+        "negative_signals": 2,
+    },
+    "standard": {
+        "market_hotspots": 3,
+        "target_narrative": 5,
+        "sector_context": 3,
+        "theme_mapping": 2,
+        "peer_context": 2,
+        "negative_signals": 5,
+    },
+}
 
 
 @dataclass(frozen=True)
@@ -126,28 +148,23 @@ def parse_strict_cutoff_date(as_of_date: str) -> date:
 
 
 def limit_query_plan_by_depth(queries: list[dict[str, Any]], depth: str) -> list[dict[str, Any]]:
-    """按深度截取查询计划，并保证 quick 模式覆盖核心信息桶。
+    """按深度和信息桶配额截取查询计划。
 
     参数：
         queries: 去重后的查询计划。
         depth: quick、standard 或 deep。
     返回值：
-        截取后的查询计划。
+        截取后的查询计划；quick 和 standard 会优先满足核心桶配额，deep 保持原始优先级顺序。
+
+    为什么这样做：
+        查询模板按市场热点、公司叙事、行业、主题、同行、反方的顺序生成。直接截取会让位于末尾的
+        同行和反方查询在额度收紧时被系统性丢弃，因此有限额度档必须先按桶取数，再用剩余额度回填。
     """
     limit = DEPTH_QUERY_LIMITS[depth]
-    if depth != "quick":
+    quotas = DEPTH_BUCKET_QUOTAS.get(depth)
+    if quotas is None:
         return queries[:limit]
 
-    # quick 模式最容易因为查询数量受限而只剩市场热点和公司叙事。
-    # 因此这里用最小配额保证反方、行业、主题和同行至少被触达一次，避免输出看似完整但缺少证伪搜索。
-    quotas = {
-        "market_hotspots": 3,
-        "target_narrative": 3,
-        "sector_context": 2,
-        "theme_mapping": 1,
-        "peer_context": 1,
-        "negative_signals": 2,
-    }
     selected: list[dict[str, Any]] = []
     selected_queries: set[str] = set()
     for bucket, quota in quotas.items():
@@ -157,6 +174,9 @@ def limit_query_plan_by_depth(queries: list[dict[str, Any]], depth: str) -> list
             if query not in selected_queries:
                 selected.append(item)
                 selected_queries.add(query)
+
+    # 某些请求可能缺少行业、公司身份或足够的 focus，导致个别桶无法用满配额。此时按原始优先级
+    # 回填未选查询，使总额度仍被充分利用，同时不破坏前面已经确保的核心覆盖和反方覆盖。
     for item in queries:
         if len(selected) >= limit:
             break

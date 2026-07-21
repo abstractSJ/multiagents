@@ -32,8 +32,8 @@ REVIEW_SCHEMA_VERSION = "1.0"
 
 # 固定限制语必须随每一份 review 保存，避免前端或调用方遗漏关键解释边界。
 REVIEW_LIMITATIONS = [
-    "spot_price_change 仅为股价变动，不含分红、送转、税费与再投资，因此不是股东总回报（TSR）。",
-    "回看结果是描述性对照，不构成因果归因、策略有效性证明或投资建议。",
+    "spot_price_change measures share-price movement only. It excludes dividends, bonus issues, taxes, fees, and reinvestment, so it is not total shareholder return (TSR).",
+    "The review is a descriptive comparison. It does not establish causality, prove strategy effectiveness, or constitute investment advice.",
 ]
 
 _PROVIDER_ORDER = ("tencent_qfqday", "eastmoney_trade_close")
@@ -97,13 +97,13 @@ def parse_review_date(value: Any, *, cutoff: str = "", today: _dt.date | None = 
     try:
         parsed = _dt.date.fromisoformat(text)
     except ValueError as exc:
-        raise HistoryValidationError("review_date 必须是 YYYY-MM-DD 格式") from exc
+        raise HistoryValidationError("review_date must use YYYY-MM-DD format") from exc
     today_value = today or _dt.date.today()
     if parsed > today_value:
-        raise HistoryValidationError("review_date 不能晚于今天")
+        raise HistoryValidationError("review_date cannot be later than today")
     cutoff_text = _date_text(cutoff)
     if cutoff_text and parsed < _dt.date.fromisoformat(cutoff_text):
-        raise HistoryValidationError("review_date 不能早于 decision snapshot 的 knowledge_cutoff")
+        raise HistoryValidationError("review_date cannot be earlier than the decision snapshot's knowledge_cutoff")
     return parsed
 
 
@@ -127,21 +127,21 @@ def _manual_observation_input(
         return None
     number = _positive_number(price)
     if number is None:
-        raise HistoryValidationError(f"{label} 必须是有限正数")
+        raise HistoryValidationError(f"{label} must be a finite positive number")
     date_text = str(observation_date or "").strip()
     try:
         parsed_date = _dt.date.fromisoformat(date_text)
     except ValueError as exc:
-        raise HistoryValidationError(f"{label}日期必须是 YYYY-MM-DD 格式") from exc
+        raise HistoryValidationError(f"{label} date must use YYYY-MM-DD format") from exc
     if parsed_date.isoformat() != date_text:
-        raise HistoryValidationError(f"{label}日期必须是 YYYY-MM-DD 格式")
+        raise HistoryValidationError(f"{label} date must use YYYY-MM-DD format")
     if parsed_date > latest_date:
-        raise HistoryValidationError(f"{label}日期不能晚于 {latest_date.isoformat()}")
+        raise HistoryValidationError(f"{label} date cannot be later than {latest_date.isoformat()}")
     if earliest_date is not None and parsed_date < earliest_date:
-        raise HistoryValidationError(f"{label}日期不能早于 {earliest_date.isoformat()}")
+        raise HistoryValidationError(f"{label} date cannot be earlier than {earliest_date.isoformat()}")
     source_text = str(source or "").strip()
     if not source_text:
-        raise HistoryValidationError(f"{label}来源不能为空")
+        raise HistoryValidationError(f"{label} source cannot be empty")
     return {
         "status": "available",
         "stock_code": str(stock_code or "").strip(),
@@ -178,7 +178,7 @@ def validate_review_inputs(
     """
     cutoff_text = _date_text(snapshot.get("knowledge_cutoff"))
     if not cutoff_text:
-        raise HistoryValidationError("decision snapshot 缺少有效 knowledge_cutoff")
+        raise HistoryValidationError("Decision snapshot has no valid knowledge_cutoff")
     review_day = parse_review_date(review_date, cutoff=cutoff_text, today=today)
     cutoff_day = _dt.date.fromisoformat(cutoff_text)
     target = snapshot.get("target") if isinstance(snapshot.get("target"), dict) else {}
@@ -213,11 +213,11 @@ def validate_review_inputs(
         latest_date=review_day,
     )
     if (manual_benchmark_baseline or manual_benchmark_current) and not benchmark_code_text:
-        raise HistoryValidationError("提供 benchmark 手工价格时 benchmark_code 不能为空")
+        raise HistoryValidationError("benchmark_code is required when manual benchmark prices are provided")
 
     status = str(falsification_status or "unknown").strip().lower()
     if status not in {"unknown", "held", "breached"}:
-        raise HistoryValidationError("falsification_status 必须是 unknown、held 或 breached")
+        raise HistoryValidationError("falsification_status must be unknown, held, or breached")
     return {
         "review_date": review_day.isoformat(),
         "cutoff": cutoff_text,
@@ -311,10 +311,10 @@ def build_decision_snapshot(
         SnapshotUnavailableError: 非公司 run、没有 run_completed 或没有 summary。
     """
     if mode != "company":
-        raise SnapshotUnavailableError("仅 company run 支持 decision snapshot")
+        raise SnapshotUnavailableError("Decision snapshots are supported only for company runs")
     summary, terminal_ts = _terminal_summary(events)
     if summary is None:
-        raise SnapshotUnavailableError("run 没有可用的 run_completed.summary")
+        raise SnapshotUnavailableError("The run has no usable run_completed.summary")
 
     params = dict(params or {})
     decision = copy.deepcopy(summary)
@@ -352,9 +352,9 @@ def load_decision_snapshot(run_dir: Path) -> tuple[dict[str, Any] | None, list[s
     try:
         payload = json.loads(path.read_text(encoding="utf-8"))
     except (OSError, json.JSONDecodeError) as exc:
-        return None, [f"decision snapshot 损坏或不可读: {exc}"]
+        return None, [f"Decision snapshot is corrupted or unreadable: {exc}"]
     if not isinstance(payload, dict):
-        return None, ["decision snapshot 顶层不是 JSON 对象"]
+        return None, ["Decision snapshot root is not a JSON object"]
     return payload, []
 
 
@@ -407,7 +407,7 @@ def freeze_decision_snapshot(run_dir: Path, snapshot: dict[str, Any]) -> tuple[d
         return copy.deepcopy(snapshot), True
     existing, warnings = load_decision_snapshot(run_dir)
     if existing is None:
-        raise HistoryValidationError("decision snapshot 已存在但无法读取：" + "；".join(warnings))
+        raise HistoryValidationError("Decision snapshot already exists but cannot be read: " + "；".join(warnings))
     return existing, False
 
 
@@ -448,7 +448,7 @@ def read_reviews(run_dir: Path) -> tuple[list[dict[str, Any]], list[str]]:
     try:
         lines = path.read_text(encoding="utf-8").splitlines()
     except OSError as exc:
-        return [], [f"reviews 读取失败: {exc}"]
+        return [], [f"Failed to read reviews: {exc}"]
     for line_number, line in enumerate(lines, start=1):
         text = line.strip()
         if not text:
@@ -456,10 +456,10 @@ def read_reviews(run_dir: Path) -> tuple[list[dict[str, Any]], list[str]]:
         try:
             payload = json.loads(text)
         except json.JSONDecodeError as exc:
-            warnings.append(f"reviews.jsonl 第 {line_number} 行损坏，已跳过: {exc.msg}")
+            warnings.append(f"reviews.jsonl line {line_number} is corrupted and was skipped: {exc.msg}")
             continue
         if not isinstance(payload, dict):
-            warnings.append(f"reviews.jsonl 第 {line_number} 行不是 JSON 对象，已跳过")
+            warnings.append(f"reviews.jsonl line {line_number} is not a JSON object and was skipped")
             continue
         reviews.append(payload)
     return reviews, warnings
@@ -475,7 +475,7 @@ def append_review(run_dir: Path, review: dict[str, Any]) -> None:
         # O_APPEND + 单次 os.write 避免多个请求把同一 JSON 行交叉写入。
         written = os.write(fd, line)
         if written != len(line):
-            raise OSError("reviews.jsonl 未完整写入")
+            raise OSError("reviews.jsonl was not written completely")
         os.fsync(fd)
     finally:
         os.close(fd)
@@ -619,7 +619,7 @@ def _nearest_observation(records: list[dict[str, Any]], requested_date: str, sto
             "status": "unavailable",
             "stock_code": stock_code,
             "requested_date": requested_date,
-            "warning": "最近记录价格不是有限正数",
+            "warning": "The nearest recorded price is not a finite positive number",
         }
     return {
         "status": "available",
@@ -717,7 +717,7 @@ def resolve_price_pair(
     current = first_local(1)
     if current.get("status") != "available" and manual_current is not None:
         current = copy.deepcopy(manual_current)
-        warnings.append("current 未取得本地价格，使用用户手工输入价格、日期与来源。")
+        warnings.append("No local current price was available; using the manually supplied price, date, and source.")
 
     if prefer_snapshot_baseline:
         current_source = str(current.get("source") or "")
@@ -728,21 +728,21 @@ def resolve_price_pair(
             baseline = _snapshot_baseline(snapshot or {}, baseline_request, code)
             if baseline.get("status") == "available":
                 warnings.append(
-                    "baseline 未取得与 current 同源的本地日线，回退到冻结 decision price；"
-                    "该价格口径可能与 current 不一致。"
+                    "No local baseline daily price matched the current-price source; falling back to the "
+                    "frozen decision price. Its price basis may differ from the current price."
                 )
             else:
                 baseline = first_local(0)
                 if baseline.get("status") == "available":
-                    warnings.append("冻结 decision price 不可用，baseline 使用非同源本地价格。")
+                    warnings.append("The frozen decision price is unavailable; the baseline uses a local price from a different source.")
                 elif manual_baseline is not None:
                     baseline = copy.deepcopy(manual_baseline)
-                    warnings.append("baseline 本地与冻结价格均不可用，使用用户手工输入。")
+                    warnings.append("Neither local nor frozen baseline prices are available; using the manual input.")
     else:
         baseline = first_local(0)
         if baseline.get("status") != "available" and manual_baseline is not None:
             baseline = copy.deepcopy(manual_baseline)
-            warnings.append("benchmark baseline 未取得本地价格，使用用户手工输入。")
+            warnings.append("No local benchmark baseline price was available; using the manual input.")
 
     available_count = sum(item.get("status") == "available" for item in (baseline, current))
     same_source = bool(
@@ -751,7 +751,7 @@ def resolve_price_pair(
         and baseline.get("source") == current.get("source")
     )
     if available_count == 2 and not same_source:
-        warnings.append("baseline/current 来源不同，变化率属于混合口径描述性结果。")
+        warnings.append("Baseline and current prices use different sources; the change rate is a mixed-basis descriptive result.")
     return {
         "status": "available" if available_count == 2 else ("partial" if available_count else "unavailable"),
         "same_source": same_source,
@@ -813,7 +813,7 @@ def _valuation_bucket(snapshot: dict[str, Any], current_price: float | None) -> 
         "bucket": bucket,
         "fair_value_points": {"bear": bear, "base": base, "bull": bull},
         "distances_to_points": distances,
-        "unit": fair_value.get("unit") or "元/股",
+        "unit": fair_value.get("unit") or "CNY/share",
     }
 
 
@@ -862,7 +862,7 @@ def build_review(
     target = snapshot.get("target") if isinstance(snapshot.get("target"), dict) else {}
     stock_code = str(target.get("stock_code") or "").strip()
     if not stock_code:
-        raise HistoryValidationError("decision snapshot 缺少 target.stock_code")
+        raise HistoryValidationError("Decision snapshot has no target.stock_code")
 
     stock_prices = resolve_price_pair(
         stock_code,
@@ -910,7 +910,7 @@ def build_review(
         "note": str(note or "").strip(),
         "prices": {
             "stock": stock_prices,
-            "benchmark": benchmark or {"status": "unavailable", "reason": "benchmark_code 未提供"},
+            "benchmark": benchmark or {"status": "unavailable", "reason": "benchmark_code_not_provided"},
         },
         "metrics": {
             "elapsed_days": (parsed_review_date - cutoff_date).days,

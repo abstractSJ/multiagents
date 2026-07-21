@@ -1,5 +1,15 @@
 # multiagents 项目工作规则
 
+## 0. English Edition Output Policy
+
+This branch is the English edition of the system.
+
+- All user-facing UI text, API errors, CLI progress messages, coordinator messages, work-item titles, summaries, and final responses must be written in English.
+- All newly generated Markdown and human-readable JSON report content must be written in English, including financial analysis, valuation, market context, industry packages, audits, gaps, assumptions, risks, and falsification conditions.
+- Stable wire identifiers, schema keys, enum values, file names, stock codes, and agent IDs must remain unchanged unless an established contract explicitly requires otherwise.
+- Chinese company names, filing titles, source quotations, and Chinese-market search queries may remain in Chinese only when they are source data. Explain their meaning and analytical relevance in English.
+- Do not translate historical workspace artifacts in place. Reused Chinese artifacts are evidence inputs; any new synthesis or delivery based on them must be in English.
+
 ## 1. 项目定位
 
 这是一个面向 A 股研究的多角色投研编排项目。
@@ -42,11 +52,16 @@
 
 ### 2.3 财务分析层
 - 工作区：`financial_analyst_scripts/analyst_workspace`
-- 关键产物：
+- 单份兼容模式关键产物：
   - `analyst_report.json`
   - `analyst_report.md`
   - `evidence_check.json`
   - `analyst_audit.json`
+- 近期历史默认模式：`financial_analyst_scripts/analyst_workspace/filing_sets/<stock_code>/<as_of_date>/`
+  - `filing_set.json`
+  - `formal_financial_analysis.json`
+  - `formal_financial_analysis.md`
+- `filing_set.json` 必须记录逐份财报路径、累计期间语义和 `financial_input_fingerprint`；正式分析与估值必须复制该指纹。
 
 ### 2.4 估值分析层
 - 工作区：`valuation_analyst_scripts/valuation_workspace`
@@ -80,17 +95,18 @@
 ### 3.1 公司研究
 当用户要“研究某家公司”“分析某个股票/公司”时：
 1. 走公司研究链路；
-2. 先运行 `research_orchestrator_scripts/audit_company_research_state.py` 生成 `research_state`，盘点财报、解析、digest/RAG、财务分析、估值和市场上下文产物；
-3. 严格按照 `research_state.reusable`、`research_state.skipped_actions` 和 `research_state.next_actions` 调度；只有 `missing`、`partial`、`stale` 或 `incompatible` 的层允许补跑，默认 `force_refresh=false`，不得无脑全重跑；
-4. 调度：
+2. 先运行 `research_orchestrator_scripts/audit_company_research_state.py` 生成 `research_state`，盘点财报、解析、digest/RAG、财务分析、估值和市场上下文产物；默认 `filing_policy=recent_history`，纳入最近两份可得年报、上一年度全部已披露 q1/半年报/q3，以及截止日前已经披露或已到常规披露截止日的本年度中报。只有用户显式固定报告类型或财年时才使用 `single_filing`；
+3. `research_state.filings` 是逐份财报的权威状态，`financial_input_fingerprint` 是正式财务分析和估值复用的硬兼容条件；q1、半年报和 q3 的流量数据按 3M/6M/9M 累计口径处理，禁止直接相加；
+4. 严格按照 `research_state.reusable`、`research_state.skipped_actions` 和 `research_state.next_actions` 调度；只有 `missing`、`partial`、`stale` 或 `incompatible` 的层允许补跑，默认 `force_refresh=false`，不得无脑全重跑；
+5. 调度：
    - `information-collector`
    - `information-processor`
    - `financial-analyst`
    - `valuation-analyst`
    - `market-context-collector`
-5. 市场上下文默认是公司研究最终交付的一部分；在现有条件下只能使用 Bocha Web Search 采集公开网页市场叙事、热点、主题映射、同行线索和反方信号，并明确标记为 `public_web_search_proxy`，不得把网页结果包装成正式一致预期或高置信事实。
-6. 估值分析默认是公司研究最终交付的一部分；若市场价格、同行估值、历史分位或利率/分红数据不足，主会话必须回流补证或让 `valuation-analyst` 明确输出低置信估值边界 / 补数请求，不能让财务分析员代替估值分析员硬给目标价。
-7. 如果用户明确要求顺带看行业位置，再扩展到：
+6. 市场上下文默认是公司研究最终交付的一部分；在现有条件下只能使用 Bocha Web Search 采集公开网页市场叙事、热点、主题映射、同行线索和反方信号，并明确标记为 `public_web_search_proxy`，不得把网页结果包装成正式一致预期或高置信事实。
+7. 估值分析默认是公司研究最终交付的一部分；若市场价格、同行估值、历史分位或利率/分红数据不足，主会话必须回流补证或让 `valuation-analyst` 明确输出低置信估值边界 / 补数请求，不能让财务分析员代替估值分析员硬给目标价。
+8. 如果用户明确要求顺带看行业位置，再扩展到：
    - `industry-info-collector`
    - `industry-researcher`
 

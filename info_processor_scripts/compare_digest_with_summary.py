@@ -110,14 +110,14 @@ def build_parser() -> argparse.ArgumentParser:
         参数解析器。
     """
     parser = argparse.ArgumentParser(description="比对正式年报提取结果与摘要版 PDF，评估 Digest/RAG 覆盖有效性。")
-    parser.add_argument("--content-json", required=True, help="正式年报 content.json 路径。")
-    parser.add_argument("--summary-pdf", default="", help="摘要版 PDF 路径；不传时根据元数据和收集员清单自动寻找。")
-    parser.add_argument("--digest-json", default="", help="llm_digest.json 路径；默认取 content.json 同目录。")
-    parser.add_argument("--rag-index-dir", default="", help="RAG 索引目录；默认取 content.json 同目录下 rag_index。")
-    parser.add_argument("--collector-manifest", default=str(DEFAULT_COLLECTOR_MANIFEST), help="信息收集员总清单。")
-    parser.add_argument("--collector-workspace", default=str(DEFAULT_COLLECTOR_WORKSPACE), help="信息收集员工作区。")
-    parser.add_argument("--output", default="", help="比对报告 JSON 输出路径；默认写到正式年报目录 summary_comparison.json。")
-    parser.add_argument("--markdown-output", default="", help="比对报告 Markdown 输出路径；默认写到正式年报目录 summary_comparison.md。")
+    parser.add_argument("--content-json", required=True, help="Official annual-report content.json path.")
+    parser.add_argument("--summary-pdf", default="", help="Annual-report summary PDF path; auto-detected from metadata and the collector manifest when omitted.")
+    parser.add_argument("--digest-json", default="", help="llm_digest.json path; defaults to the content.json directory.")
+    parser.add_argument("--rag-index-dir", default="", help="RAG index directory; defaults to rag_index beside content.json.")
+    parser.add_argument("--collector-manifest", default=str(DEFAULT_COLLECTOR_MANIFEST), help="Collector master manifest.")
+    parser.add_argument("--collector-workspace", default=str(DEFAULT_COLLECTOR_WORKSPACE), help="Collector workspace.")
+    parser.add_argument("--output", default="", help="JSON comparison output; defaults to summary_comparison.json in the annual-report directory.")
+    parser.add_argument("--markdown-output", default="", help="Markdown comparison output; defaults to summary_comparison.md in the annual-report directory.")
     return parser
 
 
@@ -133,7 +133,7 @@ def compare(args: argparse.Namespace) -> None:
     """
     content_json_path = Path(args.content_json).resolve()
     if not content_json_path.exists():
-        raise FileNotFoundError(f"正式年报 content.json 不存在: {content_json_path}")
+        raise FileNotFoundError(f"Official annual-report content.json does not exist: {content_json_path}")
 
     report = json.loads(content_json_path.read_text(encoding="utf-8"))
     metadata = report.get("document_metadata", {}) or {}
@@ -179,7 +179,7 @@ def compare(args: argparse.Namespace) -> None:
     markdown_output_path = Path(args.markdown_output).resolve() if args.markdown_output else content_json_path.parent / "summary_comparison.md"
     output_path.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
     markdown_output_path.write_text(render_markdown(payload), encoding="utf-8")
-    print(f"摘要比对完成：{markdown_output_path}")
+    print(f"Annual-report summary comparison completed: {markdown_output_path}")
     print(f"JSON: {output_path}")
     print(json.dumps(payload["coverage"], ensure_ascii=False, indent=2))
 
@@ -198,13 +198,13 @@ def resolve_summary_pdf(args: argparse.Namespace, metadata: dict[str, Any]) -> P
     if args.summary_pdf:
         summary_path = Path(args.summary_pdf).resolve()
         if not summary_path.exists():
-            raise FileNotFoundError(f"摘要 PDF 不存在: {summary_path}")
+            raise FileNotFoundError(f"Annual-report summary PDF does not exist: {summary_path}")
         return summary_path
 
     manifest_path = Path(args.collector_manifest).resolve()
     collector_workspace = Path(args.collector_workspace).resolve()
     if not manifest_path.exists():
-        raise FileNotFoundError(f"信息收集员 manifest 不存在，无法自动寻找摘要 PDF: {manifest_path}")
+        raise FileNotFoundError(f"The collector manifest does not exist, so the annual-report summary PDF cannot be located: {manifest_path}")
 
     records = json.loads(manifest_path.read_text(encoding="utf-8"))
     stock_code = str(metadata.get("stock_code", ""))
@@ -228,7 +228,7 @@ def resolve_summary_pdf(args: argparse.Namespace, metadata: dict[str, Any]) -> P
             candidates.append(collector_workspace / relative_path)
     existing_candidates = [path.resolve() for path in candidates if path.exists()]
     if not existing_candidates:
-        raise FileNotFoundError(f"未找到 {stock_code} {report_year} {report_type} 的本地摘要 PDF。")
+        raise FileNotFoundError(f"No local annual-report summary PDF was found for {stock_code} {report_year} {report_type}.")
     return existing_candidates[0]
 
 
@@ -246,7 +246,7 @@ def extract_pdf_text(pdf_path: Path) -> str:
         with fitz.open(pdf_path) as document:
             return "\n".join(page.get_text("text") for page in document)
     if PdfReader is None:
-        raise RuntimeError("当前环境缺少 PyMuPDF 和 pypdf，无法提取摘要 PDF 文本。")
+        raise RuntimeError("PyMuPDF and pypdf are unavailable, so the annual-report summary PDF cannot be extracted.")
     reader = PdfReader(str(pdf_path))
     return "\n".join(page.extract_text() or "" for page in reader.pages)
 

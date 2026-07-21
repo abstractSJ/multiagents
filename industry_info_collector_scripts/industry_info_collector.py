@@ -207,10 +207,10 @@ class IndustryInfoCollector:
             as_of_date=as_of_date,
             override=classification_override,
         )
-        if explicit_industry_target and industry_classification.get("primary_industry") == "未知行业":
+        if explicit_industry_target and industry_classification.get("primary_industry") == "Unknown Industry":
             industry_classification["primary_industry"] = explicit_industry_target
-            industry_classification["classification_basis"] = industry_classification.get("classification_basis", []) + ["目标行业由 CLI 或上游显式传入。"]
-        industry_name = industry_classification.get("primary_industry") or explicit_industry_target or "未知行业"
+            industry_classification["classification_basis"] = industry_classification.get("classification_basis", []) + ["The target industry was provided explicitly by the CLI or upstream workflow."]
+        industry_name = industry_classification.get("primary_industry") or explicit_industry_target or "Unknown Industry"
         seed_industry = seed_data.get("industries", {}).get(industry_name, {})
 
         policy_records = filter_records(adapter_results["policy_regulation"].records, industry=industry_name)
@@ -260,18 +260,18 @@ class IndustryInfoCollector:
                 "report_title": None,
                 "published_at": None,
                 "announcement_id": None,
-                "main_business": "纯行业研究输入包；当前未绑定单一公司主营业务。",
+                "main_business": "Industry-only research input package; not currently tied to a single company business.",
                 "business_model": "not_applicable_industry_first_package",
                 "source_refs": [],
             }
-            financial_summary = {"source_refs": [], "limitations": ["纯行业模式下未接入公司财务分析报告。"]}
+            financial_summary = {"source_refs": [], "limitations": ["No company financial-analysis report is attached in industry-only mode."]}
             business_segments = []
             competitors = []
 
         company_events = self._records_with_source(
             records=company_events_records,
             adapter_result=adapter_results["company_events"],
-            claim="本地公司事件文件提供公司事件、公告或投资者关系资料。",
+            claim="The local company-events file provides company events, announcements, or investor-relations materials.",
             source_refs=source_refs,
             evidence_items=evidence_items,
             as_of_date=as_of_date,
@@ -290,7 +290,7 @@ class IndustryInfoCollector:
         seed_policy = self._seed_list_with_source(
             seed_industry.get("policy_and_regulation", []),
             paths.seed_data,
-            "政策监管 seed 指针",
+            "Policy and Regulation Seed Pointers",
             "curated_seed",
             source_refs,
             evidence_items,
@@ -299,7 +299,7 @@ class IndustryInfoCollector:
         local_policy = self._records_with_source(
             records=policy_records,
             adapter_result=adapter_results["policy_regulation"],
-            claim="本地政策监管文件提供行业政策或监管资料。",
+            claim="The local policy-regulation file provides industry policy or regulatory materials.",
             source_refs=source_refs,
             evidence_items=evidence_items,
             as_of_date=as_of_date,
@@ -308,7 +308,7 @@ class IndustryInfoCollector:
         technology_trends = self._seed_list_with_source(
             seed_industry.get("technology_trends", []),
             paths.seed_data,
-            "技术趋势 seed 指针",
+            "Technology Trend Seed Pointers",
             "curated_seed",
             source_refs,
             evidence_items,
@@ -317,7 +317,7 @@ class IndustryInfoCollector:
         news = self._seed_list_with_source(
             seed_industry.get("news_pointers", []),
             paths.seed_data,
-            "新闻补采 seed 指针",
+            "News Collection Seed Pointers",
             "curated_seed",
             source_refs,
             evidence_items,
@@ -344,7 +344,7 @@ class IndustryInfoCollector:
             evidence_items.append(
                 self._evidence_item(
                     ref_id=ref_id,
-                    claim="原始年报来源和本地路径已从财报信息收集员总清单确认。",
+                    claim="The original annual-report source and local path were confirmed from the financial-report collector master manifest.",
                     evidence=json.dumps(annual_report_source, ensure_ascii=False),
                     source_type="financial_report_manifest",
                     source_path=paths.financial_manifest,
@@ -414,7 +414,7 @@ class IndustryInfoCollector:
 
         package = {
             "schema_version": "1.2",
-            "collector_name": "信息收集员2",
+            "collector_name": "Industry Information Collector",
             "generated_at": self._now_iso(),
             "task_id": package_id,
             "target": {
@@ -575,7 +575,7 @@ class IndustryInfoCollector:
 
         business_profile = financial_report.get("business_profile", {}) if isinstance(financial_report, dict) else {}
         metadata = processor_content.get("document_metadata", {}) if isinstance(processor_content, dict) else {}
-        main_business = business_profile.get("main_business") or self._search_content_text(processor_content or {}, ["主营业务", "经营模式", "营业收入"]) or "未从本地输入中提取到主营业务描述。"
+        main_business = business_profile.get("main_business") or self._search_content_text(processor_content or {}, ["主营业务", "经营模式", "营业收入"]) or "No main-business description was extracted from local inputs."
         ref_id = self._add_source_ref(
             source_refs,
             source_type="financial_analyst_output_or_processor_content",
@@ -583,19 +583,19 @@ class IndustryInfoCollector:
             source_detail="business_profile.main_business / content keyword search",
             reliability="medium" if isinstance(financial_report, dict) else "low",
             as_of_date=as_of_date,
-            limitations=["该公司画像是行业研究输入，关键表述仍应回到年报原文复核。"],
+            limitations=["This company profile is an industry-research input; key statements still require verification against the original annual report."],
         )
         evidence_items.append(
             self._evidence_item(
                 ref_id=ref_id,
-                claim="公司主营业务和经营模式来自本地财务分析或年报解析结果。",
+                claim="The company main business and operating model come from local financial analysis or annual-report parsing.",
                 evidence=self._shorten(main_business, 800),
                 source_type="financial_analyst_output_or_processor_content",
                 source_path=paths.financial_analysis_report if isinstance(financial_report, dict) else paths.processor_content_json,
                 source_detail="company_profile evidence",
                 reliability="medium" if isinstance(financial_report, dict) else "low",
                 as_of_date=as_of_date,
-                limitations=["自动摘要或关键词检索可能包含重复句和解析噪声。"],
+                limitations=["Automated summaries or keyword searches may contain duplicate sentences and parsing noise."],
             )
         )
         return {
@@ -606,7 +606,7 @@ class IndustryInfoCollector:
             "published_at": metadata.get("published_at"),
             "announcement_id": metadata.get("announcement_id"),
             "main_business": main_business,
-            "business_model": business_profile.get("business_model") or "未结构化提取；需要行业研究员结合年报和业务分部复核。",
+            "business_model": business_profile.get("business_model") or "Not extracted in structured form; the industry researcher must verify against the annual report and business segments.",
             "source_refs": [ref_id],
         }
 
@@ -640,25 +640,25 @@ class IndustryInfoCollector:
                 source_detail="financial_metrics",
                 reliability="medium",
                 as_of_date=as_of_date,
-                limitations=["行业研究员应把财务指标作为公司表现输入，不应据此直接形成行业景气结论。"],
+                limitations=["The industry researcher should use financial metrics as company-performance inputs, not as direct evidence of industry conditions."],
             )
             evidence_items.append(
                 self._evidence_item(
                     ref_id=ref_id,
-                    claim="核心财务摘要来自财务分析员报告。",
+                    claim="The core financial summary comes from the financial analyst report.",
                     evidence=json.dumps(summary, ensure_ascii=False)[:1200],
                     source_type="financial_analyst_output",
                     source_path=paths.financial_analysis_report,
                     source_detail="financial_metrics",
                     reliability="medium",
                     as_of_date=as_of_date,
-                    limitations=["部分指标可能需要回到 RAG 或 content.json 核验。"],
+                    limitations=["Some metrics may require verification against RAG or content.json."],
                 )
             )
             summary["source_refs"] = [ref_id]
         else:
             summary["source_refs"] = []
-            summary["limitations"] = ["未找到财务分析员报告，财务摘要缺失。"]
+            summary["limitations"] = ["Financial analyst report not found; financial summary is missing."]
         return summary
 
     def _build_business_segments(
@@ -682,9 +682,9 @@ class IndustryInfoCollector:
                 source_detail="business_segments",
                 reliability="medium",
                 as_of_date=as_of_date,
-                limitations=["seed 业务分部是研究输入，不替代年报分部表。"],
+                limitations=["Seed business segments are research inputs and do not replace annual-report segment tables."],
             )
-            evidence_items.append(self._evidence_item(ref_id, "业务分部候选来自 seed 数据。", json.dumps(seed_segments, ensure_ascii=False), "curated_seed", paths.seed_data, "business_segments", "medium", as_of_date, ["需要回到年报分部表复核。"] ))
+            evidence_items.append(self._evidence_item(ref_id, "Business-segment candidates come from seed data.", json.dumps(seed_segments, ensure_ascii=False), "curated_seed", paths.seed_data, "business_segments", "medium", as_of_date, ["Verification against the annual-report segment table is required."] ))
             return [{**segment, "source_refs": [ref_id]} for segment in seed_segments]
 
         business_profile = financial_report.get("business_profile", {}) if isinstance(financial_report, dict) else {}
@@ -699,38 +699,38 @@ class IndustryInfoCollector:
             source_detail="business_profile.revenue_drivers / generic content keyword search",
             reliability="medium" if segment_evidence else "low",
             as_of_date=as_of_date,
-            limitations=["第一版只整理业务分部证据线索，未对分部表做完整结构化重算。"],
+            limitations=["The first version organizes business-segment evidence signals only and does not fully reconstruct segment tables."],
         )
         evidence_items.append(
             self._evidence_item(
                 ref_id=ref_id,
-                claim="业务分部候选来自财务分析员报告或年报解析关键词检索。",
-                evidence=self._shorten(segment_evidence or "未从本地输入可靠提取业务分部。", 1200),
+                claim="Business-segment candidates come from the financial analyst report or keyword search over parsed annual-report content.",
+                evidence=self._shorten(segment_evidence or "Business segments were not reliably extracted from local inputs.", 1200),
                 source_type="financial_analyst_output_and_processor_content",
                 source_path=paths.financial_analysis_report or paths.processor_content_json,
                 source_detail="business segments evidence",
                 reliability="medium" if segment_evidence else "low",
                 as_of_date=as_of_date,
-                limitations=["业务分部数值应由行业研究员或后续脚本回到原始表格精确核验。"],
+                limitations=["Business-segment figures require precise verification against original tables by the industry researcher or a later script."],
             )
         )
         if segment_evidence:
             return [
                 {
-                    "segment_name": "待结构化分部",
-                    "role_in_business": "从财务分析员报告或年报解析结果中找到业务分部证据，但尚未拆成标准化分部字段。",
+                    "segment_name": "Segment Pending Structuring",
+                    "role_in_business": "Business-segment evidence was found in the financial analyst report or annual-report parsing, but has not been split into standardized segment fields.",
                     "evidence_summary": self._shorten(segment_evidence, 800),
                     "source_refs": [ref_id],
-                    "limitations": ["需要补充分产品、分行业、分地区的标准化收入和毛利率数据。"],
+                    "limitations": ["Add standardized revenue and gross-margin data by product, industry, and region."],
                 }
             ]
         return [
             {
-                "segment_name": "未结构化提取",
-                "role_in_business": "需要从年报分部表、公司公告或人工资料补充。",
-                "evidence_summary": "未从本地输入可靠提取业务分部。",
+                "segment_name": "Not Structured",
+                "role_in_business": "Supplement from annual-report segment tables, company announcements, or manually curated materials.",
+                "evidence_summary": "Business segments were not reliably extracted from local inputs.",
                 "source_refs": [ref_id],
-                "limitations": ["当前未结构化抽取业务分部。"],
+                "limitations": ["Business segments are not currently extracted in structured form."],
             }
         ]
 
@@ -749,18 +749,18 @@ class IndustryInfoCollector:
 
         classification = seed_company.get("initial_industry_classification", {})
         if override and (override.industry_name or override.secondary_industry):
-            primary = override.industry_name or classification.get("primary_industry", "未知行业")
-            secondary = override.secondary_industry or classification.get("secondary_industry", "未知细分行业")
+            primary = override.industry_name or classification.get("primary_industry", "Unknown Industry")
+            secondary = override.secondary_industry or classification.get("secondary_industry", "Unknown Sub-Industry")
             system = override.classification_system or "user_cli_override"
-            basis = ["行业分类由 CLI 或上游显式传入。"]
-            limitations = ["显式行业分类仍需行业研究员结合业务分部和利润来源复核。"]
+            basis = ["Industry classification was provided explicitly by the CLI or upstream workflow."]
+            limitations = ["Explicit industry classification still requires verification against business segments and profit sources by the industry researcher."]
             source_type = "cli_input"
             source_path = None
             detail = "industry classification override"
             reliability = "medium"
         elif classification:
-            primary = classification.get("primary_industry", "未知行业")
-            secondary = classification.get("secondary_industry", "未知细分行业")
+            primary = classification.get("primary_industry", "Unknown Industry")
+            secondary = classification.get("secondary_industry", "Unknown Sub-Industry")
             system = classification.get("classification_system", "curated_seed")
             basis = classification.get("classification_basis", [])
             limitations = classification.get("limitations", [])
@@ -769,22 +769,22 @@ class IndustryInfoCollector:
             detail = f"companies.{stock_code}.initial_industry_classification"
             reliability = "medium"
         else:
-            primary = "未知行业"
-            secondary = "未知细分行业"
+            primary = "Unknown Industry"
+            secondary = "Unknown Sub-Industry"
             system = "missing"
             basis = []
-            limitations = ["未提供行业分类 seed 或 CLI 覆盖，信息收集员2不自动推断行业。"]
+            limitations = ["No industry-classification seed or CLI override was provided; the industry information collector does not infer the industry automatically."]
             source_type = "missing_classification"
             source_path = None
             detail = "industry classification missing"
             reliability = "low"
         if isinstance(financial_report, dict) and financial_report.get("business_profile", {}).get("main_business"):
-            basis.append("财务分析员报告提供了主营业务描述，可作为行业归属复核输入，但本收集器不自动推断行业分类。")
+            basis.append("The financial analyst report provides a main-business description that can support industry-classification verification, but this collector does not infer the classification automatically.")
         ref_id = self._add_source_ref(source_refs, source_type, source_path, detail, reliability, as_of_date, limitations)
         evidence_items.append(
             self._evidence_item(
                 ref_id=ref_id,
-                claim=f"{stock_code} 初始行业分类为 {primary}/{secondary}。",
+                claim=f"{stock_code} initial industry classification is {primary}/{secondary}.",
                 evidence=json.dumps({"primary_industry": primary, "secondary_industry": secondary, "basis": basis}, ensure_ascii=False),
                 source_type=source_type,
                 source_path=source_path,
@@ -823,9 +823,9 @@ class IndustryInfoCollector:
             source_detail="peer_candidates",
             reliability="medium",
             as_of_date=as_of_date,
-            limitations=["同行候选不是最终估值可比公司；同行年报和财务分析由原信息收集员和财务分析员负责。"],
+            limitations=["Peer candidates are not final valuation comparables; peer annual reports and financial analysis remain the responsibility of the original information collector and financial analyst."],
         )
-        evidence_items.append(self._evidence_item(ref_id, "同行候选来自 seed 数据。", json.dumps(peers, ensure_ascii=False), "curated_seed", paths.seed_data, "peer_candidates", "medium", as_of_date, ["需要行业研究员和估值分析员继续筛选可比性。"] ))
+        evidence_items.append(self._evidence_item(ref_id, "Peer candidates come from seed data.", json.dumps(peers, ensure_ascii=False), "curated_seed", paths.seed_data, "peer_candidates", "medium", as_of_date, ["The industry researcher and valuation analyst must continue screening comparability."] ))
         return [{**peer, "source_refs": [ref_id]} for peer in peers]
 
     def _build_industry_data(
@@ -861,16 +861,16 @@ class IndustryInfoCollector:
                 source_detail=f"industries.{industry_name}.value_chain / industry_metrics / tracking_indicators",
                 reliability="medium",
                 as_of_date=as_of_date,
-                limitations=["seed 行业数据是研究框架或指针，不替代权威实时数据。"],
+                limitations=["Seed industry data provides a research framework or pointers and does not replace authoritative real-time data."],
             )
             source_ref_ids.append(ref_id)
-            evidence_items.append(self._evidence_item(ref_id, f"{industry_name} 行业框架来自 seed 数据。", json.dumps(seed_industry, ensure_ascii=False)[:1600], "curated_seed", paths.seed_data, f"industries.{industry_name}", "medium", as_of_date, ["不能据此直接形成实时行业景气判断。"] ))
+            evidence_items.append(self._evidence_item(ref_id, f"{industry_name} industry framework comes from seed data.", json.dumps(seed_industry, ensure_ascii=False)[:1600], "curated_seed", paths.seed_data, f"industries.{industry_name}", "medium", as_of_date, ["This cannot independently support a real-time industry-cycle conclusion."] ))
             value_chain = {**value_chain, "source_refs": [ref_id]}
             industry_metrics = [{**metric, "source_refs": [ref_id]} for metric in industry_metrics]
         public_stats = self._records_with_source(
             records=public_stats_records,
             adapter_result=adapter_results["industry_public_stats"],
-            claim="本地行业公开统计文件提供行业统计指标。",
+            claim="The local public industry-statistics file provides industry metrics.",
             source_refs=source_refs,
             evidence_items=evidence_items,
             as_of_date=as_of_date,
@@ -878,7 +878,7 @@ class IndustryInfoCollector:
         industry_signals = self._records_with_source(
             records=industry_signal_records,
             adapter_result=adapter_results["industry_signals"],
-            claim="本地行业信号文件提供价格、库存、需求、供给、渠道、技术或政策信号。",
+            claim="The local industry-signals file provides pricing, inventory, demand, supply, channel, technology, or policy signals.",
             source_refs=source_refs,
             evidence_items=evidence_items,
             as_of_date=as_of_date,
@@ -913,8 +913,8 @@ class IndustryInfoCollector:
                     "source_path": str(adapter_result.source_path) if adapter_result.source_path else None,
                     "warnings": adapter_result.warnings,
                 },
-                "limitations": ["未提供本地行情估值文件，行业研究员不能基于本包判断估值高低。"],
-                "recommended_next_collection": ["接入用户提供的稳定行情/估值来源导出文件。"],
+                "limitations": ["No local market-valuation file was provided; the industry researcher cannot assess valuation from this package."],
+                "recommended_next_collection": ["Connect a stable user-provided market/valuation export file."],
             }
         ref_id = self._add_source_ref(
             source_refs,
@@ -925,7 +925,7 @@ class IndustryInfoCollector:
             as_of_date=as_of_date,
             limitations=market_snapshot.get("limitations", []),
         )
-        evidence_items.append(self._evidence_item(ref_id, "行情估值快照来自本地行情估值文件。", json.dumps(market_snapshot, ensure_ascii=False), adapter_result.source_type, adapter_result.source_path, "selected market valuation snapshot", market_snapshot.get("reliability", "medium"), as_of_date, market_snapshot.get("limitations", [])))
+        evidence_items.append(self._evidence_item(ref_id, "The market-valuation snapshot comes from the local market-valuation file.", json.dumps(market_snapshot, ensure_ascii=False), adapter_result.source_type, adapter_result.source_path, "selected market valuation snapshot", market_snapshot.get("reliability", "medium"), as_of_date, market_snapshot.get("limitations", [])))
         return {
             "price_snapshot": {
                 "price": market_snapshot.get("price"),
@@ -972,17 +972,17 @@ class IndustryInfoCollector:
         if event_study_request and event_study_request.event_window:
             return event_study_request.event_window
         if deliverable_type == "theme_event_study":
-            return "事件观察窗口待补充"
-        return "1年"
+            return "Event observation window pending"
+        return "1 year"
 
     def _resolve_focus_text(self, deliverable_type: str, event_study_request: EventStudyRequest | None) -> str:
         """生成可读的研究焦点描述。"""
 
         if deliverable_type == "theme_event_study":
-            impact_variables = ", ".join(event_study_request.impact_variables or []) if event_study_request else "事件传导"
-            event_name = event_study_request.event_name if event_study_request and event_study_request.event_name else "事件"
-            return f"事件研究 | {event_name} | 重点变量：{impact_variables}"
-        return "行业归属 | 行业公开统计 | 行业信号 | 政策监管 | 市场估值 | 数据缺口补采"
+            impact_variables = ", ".join(event_study_request.impact_variables or []) if event_study_request else "Event transmission"
+            event_name = event_study_request.event_name if event_study_request and event_study_request.event_name else "Event"
+            return f"Event Study | {event_name} | Key variables: {impact_variables}"
+        return "Industry Classification | Public Statistics | Industry Signals | Policy and Regulation | Market Valuation | Gap-Filling Collection"
 
     def _event_requires_pricing_mechanism(self, impact_variables: list[str], pricing_variable: str | None) -> bool:
         """判断事件研究是否必须解释定价或利润形成机制。"""
@@ -1035,13 +1035,13 @@ class IndustryInfoCollector:
                 source_detail="event study request from CLI or upstream session",
                 reliability="low",
                 as_of_date=as_of_date,
-                limitations=["该来源只说明研究问题和事件定义，不构成事件已传导的证据。"],
+                limitations=["This source defines the research question and event only; it does not prove that transmission has occurred."],
             )
             request_ref_ids.append(ref_id)
             evidence_items.append(
                 self._evidence_item(
                     ref_id=ref_id,
-                    claim="事件研究请求由 CLI 或上游会话显式给出。",
+                    claim="The event-study request was provided explicitly by the CLI or upstream session.",
                     evidence=json.dumps(
                         {
                             "event_name": request.event_name,
@@ -1058,7 +1058,7 @@ class IndustryInfoCollector:
                     source_detail="event study request",
                     reliability="low",
                     as_of_date=as_of_date,
-                    limitations=["这是研究问题本身，不是行业事实证据。"],
+                    limitations=["This is the research question itself, not factual industry evidence."],
                 )
             )
         if paths.event_timeline_file and paths.event_timeline_file.exists():
@@ -1069,20 +1069,20 @@ class IndustryInfoCollector:
                 source_detail="event timeline overlay input",
                 reliability="medium",
                 as_of_date=as_of_date,
-                limitations=["事件时间线需要结合正式公告、政策原文或权威资料复核。"],
+                limitations=["The event timeline requires verification against official announcements, original policy documents, or authoritative sources."],
             )
             timeline_ref_ids.append(ref_id)
             evidence_items.append(
                 self._evidence_item(
                     ref_id=ref_id,
-                    claim="事件时间线来自本地事件时间线文件。",
+                    claim="The event timeline comes from the local event-timeline file.",
                     evidence=json.dumps(timeline_records, ensure_ascii=False)[:1800],
                     source_type="local_event_timeline_file",
                     source_path=paths.event_timeline_file,
                     source_detail="event_timeline",
                     reliability="medium",
                     as_of_date=as_of_date,
-                    limitations=["事件时间线为输入层整理，不等于所有节点都已完成基本面验证。"],
+                    limitations=["The event timeline is organized at the input layer; not every node has completed fundamental validation."],
                 )
             )
         if paths.event_impacts_file and paths.event_impacts_file.exists():
@@ -1093,20 +1093,20 @@ class IndustryInfoCollector:
                 source_detail="event impacts overlay input",
                 reliability="medium",
                 as_of_date=as_of_date,
-                limitations=["事件影响观测依赖本地整理文件，重要指标仍需回到原始来源核实。"],
+                limitations=["Event-impact observations depend on locally curated files; important metrics still require verification against original sources."],
             )
             impacts_ref_ids.append(ref_id)
             evidence_items.append(
                 self._evidence_item(
                     ref_id=ref_id,
-                    claim="事件影响、传导链和证伪指标来自本地事件影响文件。",
+                    claim="Event impacts, transmission chains, and falsification indicators come from the local event-impact file.",
                     evidence=json.dumps(impacts_payload, ensure_ascii=False)[:1800],
                     source_type="local_event_impacts_file",
                     source_path=paths.event_impacts_file,
                     source_detail="event_impacts",
                     reliability="medium",
                     as_of_date=as_of_date,
-                    limitations=["若本地事件影响文件只包含预期推演，下游必须继续降级。"],
+                    limitations=["If the local event-impact file contains only forward scenarios, downstream conclusions must remain downgraded."],
                 )
             )
 
@@ -1115,7 +1115,7 @@ class IndustryInfoCollector:
                 {
                     "date": request.event_start_date or as_of_date,
                     "event": request.event_name,
-                    "why_it_matters": request.event_description or "事件定义已知，但关键节点仍待继续补证。",
+                    "why_it_matters": request.event_description or "The event is defined, but key nodes still require additional evidence.",
                     "affected_channel": ", ".join(impact_variables) if impact_variables else "unknown",
                 }
             ]
@@ -1123,8 +1123,8 @@ class IndustryInfoCollector:
         event_timeline = [
             {
                 "date": record.get("date") or record.get("event_date") or request.event_start_date or "unknown",
-                "event": record.get("event") or record.get("title") or record.get("event_name") or request.event_name or "未命名事件",
-                "why_it_matters": record.get("why_it_matters") or record.get("summary") or record.get("description") or "需要结合行业变量解释其重要性。",
+                "event": record.get("event") or record.get("title") or record.get("event_name") or request.event_name or "Unnamed Event",
+                "why_it_matters": record.get("why_it_matters") or record.get("summary") or record.get("description") or "Its importance must be explained using industry variables.",
                 "affected_channel": record.get("affected_channel") or record.get("channel") or (", ".join(impact_variables) if impact_variables else "unknown"),
                 "source_refs": list(dict.fromkeys(record.get("source_refs", []) + timeline_ref_ids + request_ref_ids)),
             }
@@ -1148,7 +1148,7 @@ class IndustryInfoCollector:
                 "expected_supply_path": counterfactual_without_event.get("expected_supply_path") or "unknown",
                 "expected_price_path": counterfactual_without_event.get("expected_price_path") or "unknown",
                 "key_assumptions": counterfactual_without_event.get("key_assumptions", []),
-                "confidence": counterfactual_without_event.get("confidence") or "低",
+                "confidence": counterfactual_without_event.get("confidence") or "low",
             },
         }
 
@@ -1157,7 +1157,7 @@ class IndustryInfoCollector:
             transmission_chain = [
                 {
                     "step": item.get("step") or index + 1,
-                    "from": item.get("from") or item.get("source") or request.event_name or "外部事件",
+                    "from": item.get("from") or item.get("source") or request.event_name or "External Event",
                     "to": item.get("to") or item.get("target") or industry_name,
                     "channel": item.get("channel") or "unknown",
                     "mechanism": item.get("mechanism") or item.get("description") or "unknown",
@@ -1173,15 +1173,15 @@ class IndustryInfoCollector:
             transmission_chain = [
                 {
                     "step": index + 1,
-                    "from": request.event_name or "外部事件",
+                    "from": request.event_name or "External Event",
                     "to": variable,
                     "channel": variable,
-                    "mechanism": f"需要继续验证事件如何通过 {variable} 这一环节传导到 {industry_name}。",
+                    "mechanism": f"Further validation is required to show how the event transmits through {variable} to {industry_name}.",
                     "expected_direction": "unknown",
                     "expected_lag": request.event_window or "unknown",
                     "evidence_status": "expected",
                     "observed_evidence_refs": impacts_ref_ids + request_ref_ids,
-                    "missing_evidence": [f"缺少 {variable} 的事件后观测数据。"],
+                    "missing_evidence": [f"Post-event observation data for {variable} is missing."],
                 }
                 for index, variable in enumerate(impact_variables)
             ]
@@ -1208,7 +1208,7 @@ class IndustryInfoCollector:
                 "pre_event_value": item.get("pre_event_value"),
                 "change_since_event": item.get("change_since_event") or "unknown",
                 "source_refs": item.get("source_refs", []) + impacts_ref_ids + request_ref_ids,
-                "confidence": item.get("confidence") or "低",
+                "confidence": item.get("confidence") or "low",
             }
             for item in observed_payload
         ]
@@ -1222,7 +1222,7 @@ class IndustryInfoCollector:
                     "pre_event_value": None,
                     "change_since_event": "unknown",
                     "source_refs": impacts_ref_ids + request_ref_ids,
-                    "confidence": "低",
+                    "confidence": "low",
                 }
                 for variable in impact_variables
             ]
@@ -1234,7 +1234,7 @@ class IndustryInfoCollector:
                 "expected_magnitude": item.get("expected_magnitude") or "unknown",
                 "expected_time_window": item.get("expected_time_window") or request.event_window or "unknown",
                 "reasoning": item.get("reasoning") or item.get("summary") or "unknown",
-                "confidence": item.get("confidence") or "低",
+                "confidence": item.get("confidence") or "low",
             }
             for item in expected_payload
         ]
@@ -1245,8 +1245,8 @@ class IndustryInfoCollector:
                     "expected_direction": "unknown",
                     "expected_magnitude": "unknown",
                     "expected_time_window": request.event_window or "unknown",
-                    "reasoning": f"需要继续验证 {request.event_name or '该事件'} 是否通过 {variable} 传导到行业。",
-                    "confidence": "低",
+                    "reasoning": f"Further validation is required to determine whether {request.event_name or 'the event'} transmits to the industry through {variable}.",
+                    "confidence": "low",
                 }
                 for variable in impact_variables
             ]
@@ -1260,7 +1260,7 @@ class IndustryInfoCollector:
                 "direction_or_threshold": item.get("direction_or_threshold") or item.get("threshold") or "unknown",
                 "observation_window": item.get("observation_window") or request.event_window or "unknown",
                 "data_source": item.get("data_source") or "unknown",
-                "would_falsify": item.get("would_falsify") or "需要结合具体研究判断补充。",
+                "would_falsify": item.get("would_falsify") or "Complete this based on the specific research conclusion.",
                 "current_status": item.get("current_status") or "not_started",
             }
             for item in falsification_payload
@@ -1272,7 +1272,7 @@ class IndustryInfoCollector:
                     "direction_or_threshold": "unknown",
                     "observation_window": request.event_window or "unknown",
                     "data_source": "unknown",
-                    "would_falsify": f"若 {variable} 长时间无变化，则事件影响可能仍停留在预期层。",
+                    "would_falsify": f"If {variable} remains unchanged for an extended period, the event impact may still be only an expectation.",
                     "current_status": "not_started",
                 }
                 for variable in impact_variables
@@ -1282,50 +1282,50 @@ class IndustryInfoCollector:
         if not request.event_name:
             event_specific_gaps.append(
                 {
-                    "gap": "缺少明确事件名称或事件定义。",
-                    "blocks_which_judgement": "无法稳定界定研究对象和事件边界。",
-                    "suggested_source": "主会话补充事件定义或本地事件清单。",
-                    "fallback_proxy": "无",
+                    "gap": "A clear event name or definition is missing.",
+                    "blocks_which_judgement": "The research target and event boundary cannot be defined reliably.",
+                    "suggested_source": "The main session should add an event definition or local event list.",
+                    "fallback_proxy": "None",
                     "severity": "high",
                 }
             )
         if not event_timeline:
             event_specific_gaps.append(
                 {
-                    "gap": "缺少关键事件时间线。",
-                    "blocks_which_judgement": "无法判断事件何时开始影响行业，以及哪些节点是新增变量。",
-                    "suggested_source": "政策原文、公告、新闻时间线、本地事件文件。",
-                    "fallback_proxy": "只保留事件假设，不下已传导结论。",
+                    "gap": "A key event timeline is missing.",
+                    "blocks_which_judgement": "It is not possible to determine when the event began affecting the industry or which nodes are new variables.",
+                    "suggested_source": "Original policy documents, announcements, news timelines, or local event files.",
+                    "fallback_proxy": "Retain only the event hypothesis; do not conclude that transmission has occurred.",
                     "severity": "high",
                 }
             )
         if not transmission_chain:
             event_specific_gaps.append(
                 {
-                    "gap": "缺少事件到行业变量的传导链。",
-                    "blocks_which_judgement": "无法判断事件如何影响供给、需求、价格或利润。",
-                    "suggested_source": "行业研究员手工梳理传导链或本地事件影响文件。",
-                    "fallback_proxy": "仅保留背景描述。",
+                    "gap": "The transmission chain from the event to industry variables is missing.",
+                    "blocks_which_judgement": "It is not possible to determine how the event affects supply, demand, pricing, or profit.",
+                    "suggested_source": "The industry researcher should map the transmission chain manually or use a local event-impact file.",
+                    "fallback_proxy": "Retain background description only.",
                     "severity": "high",
                 }
             )
         if self._event_requires_pricing_mechanism(impact_variables, request.pricing_variable) and not pricing_mechanism:
             event_specific_gaps.append(
                 {
-                    "gap": "缺少定价或利润形成机制。",
-                    "blocks_which_judgement": "无法把事件和价格、ASP、费率、毛利率或利润联系起来。",
-                    "suggested_source": "价格机制说明、招投标规则、长协机制、成本传导资料。",
-                    "fallback_proxy": "仅判断供需或物流，不下价格/利润结论。",
+                    "gap": "The pricing or profit-formation mechanism is missing.",
+                    "blocks_which_judgement": "The event cannot be linked to price, ASP, rates, gross margin, or profit.",
+                    "suggested_source": "Pricing-mechanism documentation, tender rules, long-term contract mechanisms, or cost-pass-through materials.",
+                    "fallback_proxy": "Assess supply-demand or logistics only; do not conclude on pricing or profit.",
                     "severity": "high",
                 }
             )
         if not has_observed_numeric_impact:
             event_specific_gaps.append(
                 {
-                    "gap": "缺少事件后的可观察落地变量。",
-                    "blocks_which_judgement": "无法确认事件影响已经兑现到基本面。",
-                    "suggested_source": "价格、库存、产量、进口量、订单、招标量、毛利率等事件后数据。",
-                    "fallback_proxy": "降级为事件驱动假设待验证。",
+                    "gap": "Observable post-event realization variables are missing.",
+                    "blocks_which_judgement": "It is not possible to confirm that the event impact has reached fundamentals.",
+                    "suggested_source": "Post-event data such as price, inventory, output, imports, orders, tender volume, or gross margin.",
+                    "fallback_proxy": "Downgrade to an event-driven hypothesis pending validation.",
                     "severity": "high",
                 }
             )
@@ -1383,7 +1383,7 @@ class IndustryInfoCollector:
                     "history_window": record.get("history_window") or record.get("period") or "unknown",
                     "percentile_or_range_position": record.get("percentile_or_range_position") or "unknown",
                     "source_path_or_url": record.get("source_refs", []),
-                    "coverage_note": record.get("coverage") or record.get("summary") or "行业公开统计",
+                    "coverage_note": record.get("coverage") or record.get("summary") or "Public Industry Statistics",
                     "confidence": record.get("reliability") or "medium",
                     "gap_reason": (record.get("limitations") or [None])[0],
                 }
@@ -1400,7 +1400,7 @@ class IndustryInfoCollector:
                     "history_window": record.get("history_window") or "unknown",
                     "percentile_or_range_position": record.get("percentile_or_range_position") or "unknown",
                     "source_path_or_url": record.get("source_refs", []),
-                    "coverage_note": record.get("summary") or "行业信号",
+                    "coverage_note": record.get("summary") or "Industry Signal",
                     "confidence": record.get("reliability") or "medium",
                     "gap_reason": (record.get("limitations") or [None])[0],
                 }
@@ -1418,9 +1418,9 @@ class IndustryInfoCollector:
                         "history_window": event_study.get("baseline_and_counterfactual", {}).get("pre_event_baseline", {}).get("baseline_period") or "unknown",
                         "percentile_or_range_position": "unknown",
                         "source_path_or_url": item.get("source_refs", []),
-                        "coverage_note": "事件后观测变量",
+                        "coverage_note": "Post-Event Observation Variable",
                         "confidence": item.get("confidence") or "low",
-                        "gap_reason": None if item.get("current_value") not in {None, "", "unknown"} else "尚未取得事件后可观察数值。",
+                        "gap_reason": None if item.get("current_value") not in {None, "", "unknown"} else "No observable post-event value has been obtained.",
                     }
                 )
         if market_snapshot:
@@ -1435,7 +1435,7 @@ class IndustryInfoCollector:
                     "history_window": "unknown",
                     "percentile_or_range_position": "unknown",
                     "source_path_or_url": [],
-                    "coverage_note": "本地行情估值快照",
+                    "coverage_note": "Local Market-Valuation Snapshot",
                     "confidence": market_snapshot.get("reliability") or "medium",
                     "gap_reason": None,
                 }
@@ -1469,40 +1469,40 @@ class IndustryInfoCollector:
         if not public_stats:
             gaps.append(
                 {
-                    "gap": "缺少行业公开统计序列。",
-                    "blocks_which_judgement": "无法稳定判断行业总量、历史位置和周期阶段。",
-                    "suggested_source": "统计局、协会、海关、行业数据库或用户本地统计文件。",
-                    "fallback_proxy": "局部样本或公司口径只能作为弱代理。",
+                    "gap": "Public industry-statistics series are missing.",
+                    "blocks_which_judgement": "Industry scale, historical position, and cycle stage cannot be assessed reliably.",
+                    "suggested_source": "Statistics bureaus, associations, customs, industry databases, or user-provided local statistics files.",
+                    "fallback_proxy": "Local samples or company-level measures can serve only as weak proxies.",
                     "severity": "high",
                 }
             )
         if not industry_signals:
             gaps.append(
                 {
-                    "gap": "缺少行业信号数据。",
-                    "blocks_which_judgement": "难以跟踪价格、库存、需求、供给或渠道的高频变化。",
-                    "suggested_source": "价格、库存、供需、技术或渠道的本地信号文件。",
-                    "fallback_proxy": "新闻和管理层口径只能作为辅助线索。",
+                    "gap": "Industry-signal data is missing.",
+                    "blocks_which_judgement": "High-frequency changes in price, inventory, demand, supply, or channels are difficult to track.",
+                    "suggested_source": "Local signal files covering price, inventory, supply-demand, technology, or channels.",
+                    "fallback_proxy": "News and management commentary can serve only as supporting signals.",
                     "severity": "medium",
                 }
             )
         if not policy_and_regulation:
             gaps.append(
                 {
-                    "gap": "缺少政策/监管原文。",
-                    "blocks_which_judgement": "无法确认政策、监管、集采或制裁到底作用到哪个环节。",
-                    "suggested_source": "政策原文、监管文件、集采规则、出口限制文件。",
-                    "fallback_proxy": "二手转述只能支持低置信判断。",
+                    "gap": "Original policy or regulatory documents are missing.",
+                    "blocks_which_judgement": "It is not possible to confirm which segment is affected by policy, regulation, centralized procurement, or sanctions.",
+                    "suggested_source": "Original policy documents, regulatory files, centralized-procurement rules, or export-restriction documents.",
+                    "fallback_proxy": "Secondary summaries can support only low-confidence conclusions.",
                     "severity": "medium",
                 }
             )
         if market_data.get("collection_status") != "available_from_local_file":
             gaps.append(
                 {
-                    "gap": "缺少稳定行情估值快照。",
-                    "blocks_which_judgement": "无法基于本包判断估值位置或市场映射。",
-                    "suggested_source": "用户稳定行情/估值导出文件。",
-                    "fallback_proxy": "仅做基本面研究，不讨论估值。",
+                    "gap": "A stable market-valuation snapshot is missing.",
+                    "blocks_which_judgement": "Valuation position or market mapping cannot be assessed from this package.",
+                    "suggested_source": "A stable user-provided market/valuation export file.",
+                    "fallback_proxy": "Perform fundamental research only; do not discuss valuation.",
                     "severity": "low",
                 }
             )
@@ -1511,10 +1511,10 @@ class IndustryInfoCollector:
         if deliverable_type != "theme_event_study" and not company_events:
             gaps.append(
                 {
-                    "gap": "缺少公司事件验证材料。",
-                    "blocks_which_judgement": "难以用公司行为验证行业边际变化。",
-                    "suggested_source": "公司事件、经营公告、投资者关系记录。",
-                    "fallback_proxy": "保持行业层研究，不做强公司映射。",
+                    "gap": "Company-event validation materials are missing.",
+                    "blocks_which_judgement": "Company behavior cannot be used to validate marginal industry changes.",
+                    "suggested_source": "Company events, operating announcements, or investor-relations records.",
+                    "fallback_proxy": "Keep the analysis at the industry level and avoid strong company mapping.",
                     "severity": "low",
                 }
             )
@@ -1549,43 +1549,43 @@ class IndustryInfoCollector:
             evidence_categories += 1
 
         if evidence_categories >= 4:
-            coverage = "高"
+            coverage = "high"
         elif evidence_categories >= 2:
-            coverage = "中"
+            coverage = "medium"
         else:
-            coverage = "低"
+            coverage = "low"
 
         if has_company_context and not public_stats and not industry_signals and not policy_and_regulation:
-            company_evidence_ratio = "高"
+            company_evidence_ratio = "high"
         elif has_company_context:
-            company_evidence_ratio = "中"
+            company_evidence_ratio = "medium"
         else:
-            company_evidence_ratio = "低"
+            company_evidence_ratio = "low"
 
         theme_event_study_gate = self._build_theme_event_study_gate(event_study) if deliverable_type == "theme_event_study" else None
-        can_support_full_research = quant_variable_count >= 3 and coverage != "低"
+        can_support_full_research = quant_variable_count >= 3 and coverage != "low"
         downgrade_reason = ""
         if deliverable_type == "theme_event_study":
             can_support_full_research = can_support_full_research and bool(theme_event_study_gate and theme_event_study_gate.get("has_observed_impact_variable")) and bool(theme_event_study_gate and theme_event_study_gate.get("minimum_passed"))
-            downgrade_reason = theme_event_study_gate.get("downgrade_reason") if theme_event_study_gate else "事件研究覆盖层缺失。"
+            downgrade_reason = theme_event_study_gate.get("downgrade_reason") if theme_event_study_gate else "The event-study coverage layer is missing."
         else:
             if quant_variable_count < 3:
-                downgrade_reason = "核心量化变量少于 3 个。"
-            elif coverage == "低":
-                downgrade_reason = "行业层证据覆盖度偏低。"
-            elif company_evidence_ratio == "高":
-                downgrade_reason = "公司材料占比过高，行业层证据不足。"
+                downgrade_reason = "There are fewer than three core quantitative variables."
+            elif coverage == "low":
+                downgrade_reason = "Industry-level evidence coverage is low."
+            elif company_evidence_ratio == "high":
+                downgrade_reason = "Company materials account for too much of the package; industry-level evidence is insufficient."
 
         if can_support_full_research:
             downgrade_reason = ""
         if not downgrade_reason and gaps:
-            downgrade_reason = gaps[0].get("gap", "关键证据仍有缺口。")
+            downgrade_reason = gaps[0].get("gap", "Critical evidence gaps remain.")
 
         gate = {
             "industry_evidence_coverage": coverage,
             "quant_variable_count": quant_variable_count,
-            "freshness_check": f"关键输入按 {as_of_date} 视角整理；是否为最新口径需结合源文件日期复核。",
-            "source_diversity": "中" if public_stats or industry_signals or policy_and_regulation else "低",
+            "freshness_check": f"Key inputs are organized as of {as_of_date}; verify source-file dates to confirm whether they use the latest basis.",
+            "source_diversity": "medium" if public_stats or industry_signals or policy_and_regulation else "low",
             "company_evidence_ratio": company_evidence_ratio,
             "can_support_full_research": can_support_full_research,
             "downgrade_reason": downgrade_reason or "",
@@ -1609,17 +1609,17 @@ class IndustryInfoCollector:
         has_pricing_mechanism_when_needed = not requires_pricing_mechanism or bool(pricing_mechanism)
         downgrade_reasons = []
         if not event_study.get("event_timeline"):
-            downgrade_reasons.append("缺少关键事件时间线。")
+            downgrade_reasons.append("A key event timeline is missing.")
         if not event_study.get("transmission_chain"):
-            downgrade_reasons.append("缺少事件传导链。")
+            downgrade_reasons.append("The event transmission chain is missing.")
         if not event_study.get("baseline_and_counterfactual"):
-            downgrade_reasons.append("缺少事件前基线或反事实。")
+            downgrade_reasons.append("The pre-event baseline or counterfactual is missing.")
         if not event_study.get("falsification_indicators"):
-            downgrade_reasons.append("缺少证伪指标。")
+            downgrade_reasons.append("Falsification indicators are missing.")
         if requires_pricing_mechanism and not pricing_mechanism:
-            downgrade_reasons.append("价格/利润是重点，但缺少定价或利润形成机制。")
+            downgrade_reasons.append("Price/profit is a focus, but the pricing or profit-formation mechanism is missing.")
         if not has_observed_impact_variable:
-            downgrade_reasons.append("缺少事件后的可观察落地变量。")
+            downgrade_reasons.append("Observable post-event realization variables are missing.")
         return {
             "has_event_timeline": bool(event_study.get("event_timeline")),
             "has_transmission_chain": bool(event_study.get("transmission_chain")),
@@ -1688,8 +1688,8 @@ class IndustryInfoCollector:
 
         if not items:
             return []
-        ref_id = self._add_source_ref(source_refs, source_type, seed_path, claim, "low", as_of_date, ["该列表为离线 seed 指针，后续需要权威来源补采。"])
-        evidence_items.append(self._evidence_item(ref_id, claim, json.dumps(items, ensure_ascii=False), source_type, seed_path, claim, "low", as_of_date, ["不是实时权威数据。"] ))
+        ref_id = self._add_source_ref(source_refs, source_type, seed_path, claim, "low", as_of_date, ["This list contains offline seed pointers and requires later collection from authoritative sources."])
+        evidence_items.append(self._evidence_item(ref_id, claim, json.dumps(items, ensure_ascii=False), source_type, seed_path, claim, "low", as_of_date, ["Not authoritative real-time data."] ))
         return [{**item, "source_refs": [ref_id]} for item in items]
 
     def _build_management_commentary(self, financial_report: Any) -> list[dict[str, Any]]:
@@ -1700,9 +1700,9 @@ class IndustryInfoCollector:
         growth = financial_report.get("growth_and_outlook", {})
         return [
             {
-                "topic": "财务分析员报告中的成长和展望字段",
+                "topic": "Growth and Outlook Fields in the Financial Analyst Report",
                 "summary": self._shorten(json.dumps(growth, ensure_ascii=False), 800),
-                "limitations": ["该内容来自财务分析员报告摘要，行业研究员应回到年报管理层讨论与分析章节核验。"],
+                "limitations": ["This content comes from the financial analyst report summary; the industry researcher should verify it against the annual report Management Discussion and Analysis section."],
             }
         ]
 
@@ -1710,7 +1710,7 @@ class IndustryInfoCollector:
         """整理财务分析员报告入口，供行业研究员理解其可用性和限制。"""
 
         if not isinstance(financial_report, dict):
-            return {"available": False, "source_path": str(path) if path else None, "limitations": ["未找到财务分析员报告。"]}
+            return {"available": False, "source_path": str(path) if path else None, "limitations": ["Financial analyst report not found."]}
         return {
             "available": True,
             "source_path": str(path),
@@ -1755,19 +1755,19 @@ class IndustryInfoCollector:
 
         limitations = []
         if offline:
-            limitations.append("本次为离线模式，未主动抓取网页、新闻或外部接口。")
+            limitations.append("This run is offline and did not actively fetch web pages, news, or external APIs.")
         if not isinstance(financial_report, dict):
-            limitations.append("未找到财务分析员报告，财务摘要不足。")
+            limitations.append("The financial analyst report was not found; the financial summary is insufficient.")
         if not seed_data:
-            limitations.append("未找到行业 seed 数据，行业分类、同行候选和产业链信息可能不足。")
-        if industry_classification.get("primary_industry") == "未知行业":
-            limitations.append("未提供可靠行业分类，行业研究员需要先确认真实行业归属。")
+            limitations.append("Industry seed data was not found; industry classification, peer candidates, and value-chain information may be insufficient.")
+        if industry_classification.get("primary_industry") == "Unknown Industry":
+            limitations.append("No reliable industry classification was provided; the industry researcher must confirm the actual industry classification first.")
         if market_data.get("collection_status") != "available_from_local_file":
-            limitations.append("未提供行情估值文件，不能基于本包判断估值高低。")
+            limitations.append("No market-valuation file was provided; valuation cannot be assessed from this package.")
         limitations.extend(
             [
-                "同行候选如存在，仅作为研究线索，不等于最终估值可比公司；同行年报和财务分析由原信息收集员与财务分析员负责。",
-                "行业指标、政策、统计和信号均为行业研究输入，不构成自动行业结论。",
+                "Peer candidates, if present, are research signals rather than final valuation comparables. Peer annual reports and financial analysis remain the responsibility of the original information collector and financial analyst.",
+                "Industry metrics, policies, statistics, and signals are research inputs and do not constitute an automatic industry conclusion.",
             ]
         )
         return list(dict.fromkeys(limitations))
@@ -1786,27 +1786,27 @@ class IndustryInfoCollector:
 
         recommendations = list(seed_industry.get("recommended_next_collection", []))
         if not public_stats:
-            recommendations.append("补充行业公开统计数据，例如产量、销量、价格、库存、进出口、渗透率或行业收入利润等适用于该行业的指标。")
+            recommendations.append("Add public industry statistics such as output, sales, price, inventory, imports/exports, penetration, or industry revenue and profit, as applicable.")
         if not industry_signals:
-            recommendations.append("补充行业信号数据，例如价格、需求、库存、渠道、供给、政策或技术变化。")
+            recommendations.append("Add industry-signal data such as price, demand, inventory, channels, supply, policy, or technology changes.")
         if not company_events:
-            recommendations.append("补充公司事件、非财报公告、投资者关系记录或经营事项。")
+            recommendations.append("Add company events, non-financial-report announcements, investor-relations records, or operating developments.")
         if not policy_and_regulation:
-            recommendations.append("补充行业相关政策、监管文件或合规要求原文。")
+            recommendations.append("Add original industry-related policy, regulatory, or compliance documents.")
         if market_data.get("collection_status") != "available_from_local_file":
-            recommendations.append("接入用户提供的稳定行情/估值来源，补充价格、市值、估值和股息率快照。")
+            recommendations.append("Connect a stable user-provided market/valuation source and add price, market cap, valuation, and dividend-yield snapshots.")
         if event_study:
             if not event_study.get("event_timeline"):
-                recommendations.append("补充关键事件时间线，明确事件起点、升级节点和政策落地节点。")
+                recommendations.append("Add a key event timeline covering the starting point, escalation nodes, and policy implementation nodes.")
             if not event_study.get("transmission_chain"):
-                recommendations.append("补充事件到供给、需求、物流、价格或利润的传导链。")
+                recommendations.append("Add the transmission chain from the event to supply, demand, logistics, price, or profit.")
             if not event_study.get("observed_vs_expected_impacts", {}).get("observed_impacts"):
-                recommendations.append("补充事件后的可观察变量，例如价格、库存、进口量、订单、招标量或毛利率。")
+                recommendations.append("Add observable post-event variables such as price, inventory, import volume, orders, tender volume, or gross margin.")
             if self._event_requires_pricing_mechanism(
                 [item.get("variable_name") for item in event_study.get("observed_vs_expected_impacts", {}).get("observed_impacts", []) if item.get("variable_name")],
                 (event_study.get("pricing_mechanism") or {}).get("price_variable") if event_study.get("pricing_mechanism") else None,
             ) and not event_study.get("pricing_mechanism"):
-                recommendations.append("补充定价或利润形成机制，解释事件如何影响价格、费率、ASP 或利润。")
+                recommendations.append("Add the pricing or profit-formation mechanism explaining how the event affects price, rates, ASP, or profit.")
         return list(dict.fromkeys(recommendations))
 
     def _build_audit(
@@ -1840,7 +1840,7 @@ class IndustryInfoCollector:
         classification = info["industry_classification"]
         missing_core = [name for name in ["financial_analysis_report", "processor_content_json"] if not input_files[name]["exists"]]
         input_quality = "medium"
-        if missing_core or classification.get("primary_industry") == "未知行业":
+        if missing_core or classification.get("primary_industry") == "Unknown Industry":
             input_quality = "low"
         market_reliable = self._market_snapshot_has_values(info["market_data"])
         stats_reliable = any(stat.get("value") not in {None, ""} and stat.get("reliability") != "low" for stat in info["industry_data"].get("public_stats", []))
@@ -1860,8 +1860,8 @@ class IndustryInfoCollector:
             "data_availability": {
                 "company_profile": "available" if info["company_profile"] else "missing",
                 "financial_summary": "available" if isinstance(financial_report, dict) else "missing",
-                "business_segments": "available" if info["business_segments"] and info["business_segments"][0].get("segment_name") != "未结构化提取" else "partial",
-                "industry_classification": "available" if classification.get("primary_industry") != "未知行业" else "missing",
+                "business_segments": "available" if info["business_segments"] and info["business_segments"][0].get("segment_name") != "Not Structured" else "partial",
+                "industry_classification": "available" if classification.get("primary_industry") != "Unknown Industry" else "missing",
                 "peer_candidates": "available_seed" if info["competitors"] else "not_collected_by_design_or_missing",
                 "company_events": "available_local_file" if info["company_events"] else "missing",
                 "public_stats": "available_local_file" if info["industry_data"].get("public_stats") else "missing",
@@ -1956,73 +1956,73 @@ class IndustryInfoCollector:
         financial = info["financial_summary"]
         market_status = info["market_data"].get("collection_status")
         target = package.get("target", {})
-        title_name = company.get("name") or target.get("industry_name") or "未命名行业"
+        title_name = company.get("name") or target.get("industry_name") or "Unnamed Industry"
         lines = [
-            f"# {title_name} 行业研究输入包",
+            f"# {title_name} Industry Research Input Package",
             "",
-            "## 1. 基本信息",
-            f"- 目标行业：{target.get('industry_name', classification.get('primary_industry'))}",
-            f"- 交付类型：{package.get('deliverable_type')}",
-            f"- 股票代码：{company.get('ticker')}",
-            f"- 财年：{company.get('fiscal_year')}",
-            f"- 生成日期：{company.get('as_of_date') or target.get('as_of_date')}",
-            f"- 输入质量：{audit['input_quality']}",
-            f"- 是否可交给行业研究员：{audit['ready_for_industry_researcher']}",
+            "## 1. Basic Information",
+            f"- Target industry: {target.get('industry_name', classification.get('primary_industry'))}",
+            f"- Deliverable type: {package.get('deliverable_type')}",
+            f"- Stock code: {company.get('ticker')}",
+            f"- Fiscal year: {company.get('fiscal_year')}",
+            f"- As-of date: {company.get('as_of_date') or target.get('as_of_date')}",
+            f"- Input quality: {audit['input_quality']}",
+            f"- Ready for industry researcher: {audit['ready_for_industry_researcher']}",
             "",
-            "## 2. 初始行业分类",
-            f"- 主要行业：{classification.get('primary_industry')}",
-            f"- 细分行业：{classification.get('secondary_industry')}",
-            "- 分类依据：",
+            "## 2. Initial Industry Classification",
+            f"- Primary industry: {classification.get('primary_industry')}",
+            f"- Secondary industry: {classification.get('secondary_industry')}",
+            "- Classification basis:",
         ]
-        lines.extend([f"  - {item}" for item in classification.get("classification_basis", [])] or ["  - 暂无分类依据，需要补充。"])
-        lines.extend(["", "## 3. 核心财务摘要"])
+        lines.extend([f"  - {item}" for item in classification.get("classification_basis", [])] or ["  - No classification basis is available; additional evidence is required."])
+        lines.extend(["", "## 3. Core Financial Summary"])
         for key in ["revenue", "net_profit_attributable", "deducted_net_profit", "operating_cash_flow", "roe"]:
             metric = financial.get(key, {})
             current = metric.get("current") or {}
             yoy = metric.get("yoy") or {}
-            lines.append(f"- {metric.get('label', key)}：{current.get('value', '缺失')} {current.get('unit', '')}；同比：{yoy.get('value', '缺失')} {yoy.get('unit', '')}")
+            lines.append(f"- {metric.get('label', key)}: {current.get('value', 'Missing')} {current.get('unit', '')}; YoY: {yoy.get('value', 'Missing')} {yoy.get('unit', '')}")
         lines.extend([
             "",
-            "## 4. 通用行业资料计数",
-            f"- 公司事件：{len(info.get('company_events', []))} 条",
-            f"- 政策监管：{len(info.get('policy_and_regulation', []))} 条",
-            f"- 行业公开统计：{len(info['industry_data'].get('public_stats', []))} 条",
-            f"- 行业信号：{len(info['industry_data'].get('industry_signals', []))} 条",
-            f"- 行情估值状态：{market_status}",
+            "## 4. General Industry Data Counts",
+            f"- Company events: {len(info.get('company_events', []))}",
+            f"- Policy and regulation: {len(info.get('policy_and_regulation', []))}",
+            f"- Public industry statistics: {len(info['industry_data'].get('public_stats', []))}",
+            f"- Industry signals: {len(info['industry_data'].get('industry_signals', []))}",
+            f"- Market-valuation status: {market_status}",
             "",
-            "## 5. 同行候选",
+            "## 5. Peer Candidates",
         ])
         if info.get("competitors"):
             for peer in info["competitors"]:
-                lines.append(f"- {peer.get('stock_code')} {peer.get('company_name')}：{peer.get('reason')}")
+                lines.append(f"- {peer.get('stock_code')} {peer.get('company_name')}: {peer.get('reason')}")
         else:
-            lines.append("- 未由信息收集员2提供；同行年报和同行财务分析由原信息收集员与财务分析员负责。")
-        lines.extend(["", "## 6. 行业指标与信号"])
+            lines.append("- Not provided by the industry information collector. Peer annual reports and financial analysis remain the responsibility of the original information collector and financial analyst.")
+        lines.extend(["", "## 6. Industry Metrics and Signals"])
         for metric in info["industry_data"].get("industry_metrics", []):
-            lines.append(f"- 指标指针：{metric.get('metric_name')}：{metric.get('description')}")
+            lines.append(f"- Metric pointer: {metric.get('metric_name')}: {metric.get('description')}")
         for stat in info["industry_data"].get("public_stats", []):
-            lines.append(f"- 公开统计：{stat.get('metric_name')} {stat.get('period', '')} = {stat.get('value')} {stat.get('unit', '')}")
+            lines.append(f"- Public statistic: {stat.get('metric_name')} {stat.get('period', '')} = {stat.get('value')} {stat.get('unit', '')}")
         for signal in info["industry_data"].get("industry_signals", []):
-            lines.append(f"- 行业信号：{signal.get('metric_name')} / {signal.get('direction')}：{signal.get('summary')}")
+            lines.append(f"- Industry signal: {signal.get('metric_name')} / {signal.get('direction')}: {signal.get('summary')}")
         if package.get("event_study"):
             event_study = package["event_study"]
             metadata = event_study.get("event_metadata", {})
             lines.extend([
                 "",
-                "## 7. 事件研究覆盖层",
-                f"- 事件名称：{metadata.get('event_name')}",
-                f"- 事件类型：{metadata.get('event_type')}",
-                f"- 事件状态：{metadata.get('event_status')}",
-                f"- 影响区域：{metadata.get('geography_scope')}",
-                f"- 时间线条数：{len(event_study.get('event_timeline', []))}",
-                f"- 传导链条数：{len(event_study.get('transmission_chain', []))}",
-                f"- 证伪指标条数：{len(event_study.get('falsification_indicators', []))}",
+                "## 7. Event-Study Coverage",
+                f"- Event name: {metadata.get('event_name')}",
+                f"- Event type: {metadata.get('event_type')}",
+                f"- Event status: {metadata.get('event_status')}",
+                f"- Geographic scope: {metadata.get('geography_scope')}",
+                f"- Timeline entries: {len(event_study.get('event_timeline', []))}",
+                f"- Transmission-chain entries: {len(event_study.get('transmission_chain', []))}",
+                f"- Falsification indicators: {len(event_study.get('falsification_indicators', []))}",
             ])
             if event_study.get("pricing_mechanism"):
-                lines.append(f"- 定价变量：{event_study['pricing_mechanism'].get('price_variable')}")
-        lines.extend(["", "## 8. 当前限制"])
+                lines.append(f"- Pricing variable: {event_study['pricing_mechanism'].get('price_variable')}")
+        lines.extend(["", "## 8. Current Limitations"])
         lines.extend([f"- {item}" for item in package["limitations"]])
-        lines.extend(["", "## 9. 推荐下一步补采"])
+        lines.extend(["", "## 9. Recommended Next Collection"])
         lines.extend([f"- {item}" for item in package["recommended_next_collection"]])
         return "\n".join(lines) + "\n"
 
@@ -2085,7 +2085,7 @@ class IndustryInfoCollector:
         for page in processor_content.get("pages", []):
             text = page.get("text", "")
             if any(keyword in text for keyword in keywords):
-                matches.append(f"第{page.get('page_number')}页：{self._shorten(text, 500)}")
+                matches.append(f"Page {page.get('page_number')}: {self._shorten(text, 500)}")
             if len(matches) >= 3:
                 break
         return "\n".join(matches)

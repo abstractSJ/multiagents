@@ -1,10 +1,14 @@
 ---
 name: rei
 description: Run the project's industry or sector research workflow, starting from industry-level evidence and using anchor companies only as validation when needed.
-argument-hint: "target=<行业或板块> [anchor_companies=代码/公司列表] [fiscal_year=YYYY] [depth=quick|standard|deep] [focus=supply_demand|policy|price|competition|geopolitics|hot_news|...] [deliverable_type=framework_only|evidence_pack|investment_research|theme_event_study|company_screening] [event_name=事件] [event_type=事件类型] [event_window=观察窗口] [impact_variables=price|supply|demand|profit|logistics|capex|competition|sentiment] [baseline_period=事件前基线窗口] [geography_scope=区域] [pricing_variable=价格变量] [counterfactual=无事件时的基线假设]"
+argument-hint: "target=<industry or sector> [anchor_companies=code/company list] [fiscal_year=YYYY] [depth=quick|standard|deep] [focus=supply_demand|policy|price|competition|geopolitics|hot_news|...] [deliverable_type=framework_only|evidence_pack|investment_research|theme_event_study|company_screening] [event_name=event] [event_type=type] [event_window=window] [impact_variables=price|supply|demand|profit|logistics|capex|competition|sentiment] [baseline_period=pre-event baseline] [geography_scope=region] [pricing_variable=price variable] [counterfactual=no-event baseline]"
 ---
 
 # /rei
+
+## English Edition Output Requirement
+
+All coordinator messages, task titles, summaries, agent handoffs, generated artifacts, and the final industry research report must be in English. Chinese policy titles, company names, source quotations, and Chinese-market search queries may remain Chinese only as source data, with English explanation. Stable schema keys, enum values, file names, stock codes, URLs, dates, and evidence locators must remain unchanged.
 
 行业或板块研究入口。这个 skill 的职责是把行业研究任务按固定链路分派给对应角色：先补行业层证据和研究框架，再按需用锚点公司做验证，最后交给 `industry-researcher` 输出正式行业判断。主会话只做调度、回流和汇总。
 

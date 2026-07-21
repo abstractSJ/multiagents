@@ -1,5 +1,15 @@
 # multiagents 项目工作规则
 
+## 0. English Edition Output Policy
+
+This branch is the English edition of the system.
+
+- All user-facing UI text, API errors, CLI progress messages, coordinator messages, work-item titles, summaries, and final responses must be written in English.
+- All newly generated Markdown and human-readable JSON report content must be written in English, including financial analysis, valuation, market context, industry packages, audits, gaps, assumptions, risks, and falsification conditions.
+- Stable wire identifiers, schema keys, enum values, file names, stock codes, and agent IDs must remain unchanged unless an established contract explicitly requires otherwise.
+- Chinese company names, filing titles, source quotations, and Chinese-market search queries may remain in Chinese only when they are source data. Explain their meaning and analytical relevance in English.
+- Do not translate historical workspace artifacts in place. Reused Chinese artifacts are evidence inputs; any new synthesis or delivery based on them must be in English.
+
 ## 1. 项目定位
 
 这是一个面向 A 股研究的多角色投研编排项目。

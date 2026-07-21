@@ -1,10 +1,14 @@
 ---
 name: rec
 description: Run the project's company research workflow for one A-share company, reusing local financial report artifacts and dispatching collector, processor, financial analyst, valuation analyst, and market context collector agents as needed.
-argument-hint: "支持两种写法：1) target=<公司名或股票代码> [fiscal_year=YYYY] [depth=...]；2) 自然语言，例如：帮我研究中泰股份，重点看现金流"
+argument-hint: "target=<company name or stock code> [filing_policy=recent_history] [annual_lookback=2] [fiscal_year=YYYY report_type=annual for one pinned filing] [depth=...]"
 ---
 
 # /rec
+
+## English Edition Output Requirement
+
+All coordinator messages, task titles, summaries, agent handoffs, generated artifacts, and the final company research report must be in English. Chinese company names, filing titles, source quotations, and Chinese-market search queries may remain Chinese only as source data, with English explanation. Stable schema keys, enum values, file names, stock codes, URLs, and evidence locators must remain unchanged.
 
 单家公司研究入口。这个 skill 的职责是把公司研究任务按固定链路分派给对应 custom agents：`information-collector`、`information-processor`、`financial-analyst`、`valuation-analyst`、`market-context-collector`。主会话只做调度、回流和汇总，不直接承担这些角色的具体职能。
 
@@ -22,6 +26,16 @@ argument-hint: "支持两种写法：1) target=<公司名或股票代码> [fisca
   - `valuation_analyst_scripts/valuation_workspace/...` → `valuation-analyst` 输出目录；当前没有稳定脚本时由 `valuation-analyst` 直接生成报告和审计产物
 - 正式财务研究判断由 `financial-analyst` custom agent 承担；正式估值判断由 `valuation-analyst` custom agent 承担。主会话只汇总它们的结论、证据路径、估值区间、缺口和下一步。
 - `/rec` 默认必须进入估值环节，不得把“关注后续指标”“仍是优质资产”“基本面有韧性”这类表述当作最终结论。若估值所需市场价格或同业数据缺失，必须先让 `valuation-analyst` 给出补数请求或低置信临时估值边界，而不是让 `financial-analyst` 代替估值。
+- 正常链路中 `financial-analyst` 和 `valuation-analyst` 各只调用一次。若核心 JSON 已形成，仅缺 Markdown 镜像、审计包装、路径登记或其他 packaging-only 产物，应基于已有实质结果补齐包装或诚实降级，不得重新调用分析角色重复推理。
+
+## research_console 协调模式
+
+当启动提示显式提供 `existing_research_state_path`，或明确写明初始 `research_state` 已由 `research_console` 生成时，进入控制台协调模式：
+
+- `research_console` 独占初始、周期和终局 audit 的所有权。主协调会话只在启动时读取一次给定状态文件，不重复执行启动 audit，不轮询或反复重读状态文件，也不重复执行终局 audit。
+- 只有在已完成的 Agent handoff 与给定状态仍不足以决定一个具体路由时，主协调会话才允许额外执行最多一次 checkpoint audit；没有这种明确路由需要时不得执行。
+- 控制台提供的状态路径只改变 audit 所有权，不改变 `research_state.reusable`、`skipped_actions`、`next_actions` 或 custom-agent 边界。
+- 未提供控制台状态路径时，保持独立 `/rec` 的标准行为：由本 skill 自行执行一次初始 audit，并在需要时完成正常的状态盘点。
 
 ## 调用方式
 
@@ -41,8 +55,10 @@ argument-hint: "支持两种写法：1) target=<公司名或股票代码> [fisca
 ## 参数
 
 - `target`：公司名、股票代码或二者同时提供。
-- `fiscal_year`：财报年度；未指定时先查 manifest 或已有产物，选择最近可用的完整财报年度。
-- `report_type`：默认 `annual`。
+- `fiscal_year`：仅用于显式固定单份财报；未指定时不再退化成“最新一份年报”。
+- `report_type`：仅用于显式固定单份 `annual` / `semiannual` / `q1` / `q3`；未指定时默认 `filing_policy=recent_history`。
+- `filing_policy`：默认 `recent_history`，自动纳入最近两份可得年报、上一年度全部已披露中报，以及截止日前已经披露或已到常规披露截止日的本年度中报；显式固定类型或财年时使用 `single_filing`。
+- `annual_lookback`：近期历史模式保留的可得年报数量，默认 `2`。
 - `depth`：`quick`、`standard`、`deep`，默认 `standard`。
 - `focus`：可选重点，如 `cashflow`、`receivable`、`growth`、`governance`、`capex`、`valuation`、`dividend`。
 - `as_of_date`：全链路知识截止日；未指定时使用当前日期。财报、公告、市场上下文、行情、同行、利率和估值输入只有在可验证日期不晚于该日时才能进入结论。
@@ -52,6 +68,16 @@ argument-hint: "支持两种写法：1) target=<公司名或股票代码> [fisca
 - `run_market_context`：默认 `true`；使用 Bocha Web Search 采集公开市场叙事、热点、主题映射和反方信号，产物只能作为市场预期代理。
 - `market_context_freshness`：默认 `oneMonth`；传给 Bocha Web Search 的时效参数。
 - `run_industry`：是否在公司研究后做行业位置分析，默认 `false`。
+
+## `cutoff_audit` 精确契约
+
+为避免不同角色重复造同义字段，下游正式产物必须使用固定键名：
+
+- `formal_financial_analysis.json`：`cutoff_date`、`strict_cutoff`、`status`、`source_report_published_at`、`maximum_included_information_date`、`future_source_count`、`future_excluded_count`、`undated_source_count`、`future_fact_claim_count`、`undated_fact_claim_count`、`cutoff_compliant`。
+- `valuation_audit.json`：`cutoff_date`、`strict_cutoff`、`status`、`financial_input_max_date`、`market_price_max_date`、`share_count_max_date`、`peer_data_max_date`、`historical_valuation_max_date`、`interest_rate_max_date`、`market_context_max_date`、`future_source_count`、`future_excluded_count`、`undated_source_count`、`future_fact_claim_count`、`undated_fact_claim_count`、`cutoff_compliant`。
+- 市场上下文三件套：`strict_cutoff`、`cutoff_date`、`policy_id`、`total_source_count`、`accepted_source_count`、`future_source_count`、`future_excluded_count`、`undated_discovery_count`、`future_fact_claim_count`、`undated_fact_claim_count`、`cutoff_compliant`。
+
+不得使用 `latest_date`、`compliant_status` 等自造别名。日期未知写 `null`，计数必须为整数；`status` 仅使用 `compliant` 或 `non_compliant`。
 
 ## 标准执行链路
 
@@ -65,13 +91,13 @@ argument-hint: "支持两种写法：1) target=<公司名或股票代码> [fisca
 
 ### 2. 主会话运行公司研究状态审计器
 
-在委派任何 custom agent 之前，必须先运行：
+独立 `/rec` 在委派任何 custom agent 之前，必须先运行下面的 audit。若启动提示已经提供 `research_console` 生成的 `existing_research_state_path`，则直接读取该文件一次并跳过本段命令，按“research_console 协调模式”执行：
 
 ```bash
-python "research_orchestrator_scripts/audit_company_research_state.py" --target <公司或代码> --report-year <YYYY> --report-type <type> --depth <quick|standard|deep> --focus <focus> --as-of-date <YYYY-MM-DD> --write-state
+python "research_orchestrator_scripts/audit_company_research_state.py" --target <公司或代码> --filing-policy recent_history --annual-lookback 2 --depth <quick|standard|deep> --focus <focus> --as-of-date <YYYY-MM-DD> --write-state
 ```
 
-若用户明确要求重做，再追加 `--force-refresh`。审计器会输出 `research_state`，主会话必须按以下规则调度：
+用户若明确指定单份财报，则改用 `--filing-policy single_filing --report-year <YYYY> --report-type <type>`。若明确要求重做，再追加 `--force-refresh`。审计器会输出 `research_state`，其中 `filings` 是逐份财报状态，`financial_input_fingerprint` 用于约束正式财务分析和估值复用。主会话必须按以下规则调度：
 
 - `status=ready`：默认复用，写入最终回复的“复用产物”和 `skipped_actions`，不得重新委派该层角色。
 - `status=partial` / `missing`：只补缺失子产物；例如只缺 RAG 时只委派 `information-processor` 补 RAG，不重跑 PDF 解析和 digest。
@@ -86,11 +112,11 @@ python "research_orchestrator_scripts/audit_company_research_state.py" --target 
 
 - 检查 `info_collector_scripts/collector_workspace/manifests/cninfo_all_reports.json`
 - 检查 `info_collector_scripts/collector_workspace/reports/...`
-- 确认正式年报、摘要版 PDF、本地路径和缺口
-- 必要时调用：
+- 按 `research_state.filing_plan` 确认最近两份可得年报、上一年度 q1/半年报/q3、以及截止日前已披露或已到常规披露截止日的本年度中报；年报摘要只作为对应年报的可选辅助文件
+- 对每个候选窗口分别调用现有采集器，例如：
 
 ```bash
-python "info_collector_scripts/run_cninfo_collection.py" --start-date <YYYY-MM-DD> --end-date <YYYY-MM-DD> --report-types annual --keyword <stock-code-or-company> --download
+python "info_collector_scripts/run_cninfo_collection.py" --start-date <disclosure-start> --end-date <cutoff-capped-end> --report-types <annual|q1|semiannual|q3> --keyword <stock-code-or-company> --download
 ```
 
 注意：`start-date` / `end-date` 是披露日期窗口，不是财报所属年度；`end-date` 绝不得晚于 `as_of_date`。manifest 中披露日在截止日之后的记录只能进入排除审计，不能下载或复用为本次研究证据。
@@ -106,9 +132,9 @@ python "info_collector_scripts/run_cninfo_collection.py" --start-date <YYYY-MM-D
 - `llm_digest.json`
 - `digest_audit.json`
 - `rag_index/rag_chunks.jsonl`
-- `summary_comparison.json`
+- `summary_comparison.json`（仅当该年报存在摘要 PDF 时必需；q1、半年报、q3 以及无摘要年报均为 `not_applicable`）
 
-它可以按需调用：
+每份财报必须按 `selected_record.announcement_id` 或精确 PDF 路径处理，不能用同财年摘要版、英文版或旧修订版的完整目录替代当前正式版。它可以按需调用：
 
 ```bash
 python "info_processor_scripts/run_pdf_processing.py" --stock-code <code> --report-type annual --report-year <year>
@@ -128,12 +154,11 @@ python "info_processor_scripts/compare_digest_with_summary.py" --content-json <c
 当证据包可用后，正式财务研究判断由 `financial-analyst` custom agent 承担。传给它：
 
 - 公司和证券代码。
-- 财报年度和报告类型。
-- `report_dir`。
-- `content.json`、`llm_digest.json/md`、`rag_chunks.jsonl`、`summary_comparison.json/md`。
-- `analyst_report.json/md` 和 `analyst_audit.json`。
+- `research_state.filings`、`financial_input_fingerprint` 和 `financial_analyst_scripts/analyst_workspace/filing_sets/<stock_code>/<as_of_date>/filing_set.json`。
+- filing set 中每份报告的 `content.json`、`llm_digest.json`、`rag_chunks.jsonl`，以及仅对适用年报存在的 `summary_comparison.json`。
 - 用户指定的 `focus` 和 `depth`。
-- `as_of_date`、来源财报 `published_at` 和正式分析输出目录；正式分析必须写入 `as_of/<as_of_date>/`，并输出 `cutoff_audit`。
+- `as_of_date`、各来源财报 `published_at` 和正式分析输出目录；近期历史模式写入 filing-set 目录，单份模式继续写入 `as_of/<as_of_date>/`。
+- 正式分析必须输出 `source_filings`、`financial_input_fingerprint` 和 `cutoff_audit`；所有页码/chunk 引用必须带 `filing_id` 前缀。
 
 `financial-analyst` 优先回答：
 
@@ -149,6 +174,8 @@ python "info_processor_scripts/compare_digest_with_summary.py" --content-json <c
 如需 evidence draft，`financial-analyst` 可按需调用：
 
 ```bash
+python "financial_analyst_scripts/run_financial_analysis.py" --research-state <research_state.json>
+# Explicit single-filing compatibility:
 python "financial_analyst_scripts/run_financial_analysis.py" --report-dir <report-dir> --analysis-depth <depth>
 ```
 
@@ -169,10 +196,10 @@ python "financial_analyst_scripts/run_financial_analysis.py" --report-dir <repor
 
 ### 7. 主会话按 `research_state` 决定是否委派 `valuation-analyst`
 
-当财务分析报告和必要估值输入可用后，正式估值判断由 `valuation-analyst` custom agent 承担。传给它：
+正式估值判断由 `valuation-analyst` custom agent 承担，但必须等两个前置条件都终止后才能启动：第一，`financial-analyst` 的正式分析调用已经结束且 `formal_financial_analysis.json` 已落盘；第二，若 `run_market_context=true`，唯一一次正常市场上下文采集已经返回终态。市场上下文终态可以是 `ready_public_proxy`、`partial_with_public_sources`、`missing_due_to_search_error`、`missing` 或 `blocked`，不要求强行变成 ready。满足 Gate 后传给它：
 
 - 公司、证券代码、交易所、币种和估值日期；该日期同时是所有财务、行情、同行、利率和市场输入的硬性知识截止日；
-- `financial-analyst` 的 `analyst_report.json/md`、`evidence_check.json`、`analyst_audit.json`；
+- `financial-analyst` 的正式 `formal_financial_analysis.json`，以及其中与 `research_state` 一致的 `financial_input_fingerprint` 和 `source_filings`；
 - `valuation_handoff`、`normalized_financials`、`forecast_boundaries`、财务风险和证伪条件；
 - 市场快照、同行估值、历史估值分位、一致预期或其缺口；
 - 行业研究路径或行业约束，如有；
@@ -194,7 +221,7 @@ python "financial_analyst_scripts/run_financial_analysis.py" --report-dir <repor
 
 ### 8. 主会话按 `research_state` 决定是否委派 `market-context-collector`
 
-`market-context-collector` 只负责利用 Bocha Web Search 采集公开网页市场上下文，不做投资结论。若 `research_state.layers.market_context.status=ready` 且日期匹配，默认复用已有 `market_context_package.json/md`；若为 `missing`、`partial` 或 `stale`，委派它运行：
+`market-context-collector` 只负责利用 Bocha Web Search 采集公开网页市场上下文，不做投资结论。若 `research_state.layers.market_context.status=ready` 且日期匹配，默认复用已有 `market_context_package.json/md`；若为 `missing`、`partial` 或 `stale`，只委派一次正常采集并运行：
 
 ```bash
 python "market_context_collector_scripts/run_market_context_collection.py" --target <公司或代码> --stock-code <code> --company-name <公司名> --industry <行业> --as-of-date <YYYY-MM-DD> --depth <quick|standard|deep> --focus <focus> --strict-cutoff
@@ -208,7 +235,7 @@ python "market_context_collector_scripts/run_market_context_collection.py" --tar
 - `raw_search_results.json`：原始搜索结果缓存，供审计和复跑。
 - 所有正式产物必须包含 `cutoff_audit`；未来来源保留在原始审计但不能进入 claim，无日期来源只能作为 discovery-only。
 
-使用边界必须写清楚：网页搜索只能形成 `public_web_search_proxy`，用于识别市场关注点、主题映射和预期代理；不得单独支撑正式一致预期、精确行情涨跌幅、高置信目标价或完整行业数据库结论。若 Bocha API 缺失、失败或只返回低质量来源，最终公司研究必须降级为 `fundamental_only`、`watchlist` 或 `public_proxy_only`，不能把网页片段包装成高置信行动结论。
+使用边界必须写清楚：网页搜索只能形成 `public_web_search_proxy`，用于识别市场关注点、主题映射和预期代理；不得单独支撑正式一致预期、精确行情涨跌幅、高置信目标价或完整行业数据库结论。若 Bocha API 缺失、失败或只返回低质量来源，`partial_with_public_sources`、`missing_due_to_search_error`、`missing` 或 `blocked` 都是可接受的本轮终态，最终公司研究相应降级为 `fundamental_only`、`watchlist` 或 `public_proxy_only`。不得手工编辑 package、补写 claim、额外搜索 enrichment 或重复调用采集员来强行把状态改成 ready；一旦估值分析开始，也不得重新打开市场上下文分支。
 
 ### 9. 回流补证规则
 

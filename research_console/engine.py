@@ -35,7 +35,9 @@ from research_console import config, history, state_reader, steps
 logger = logging.getLogger("research_console.engine")
 
 RUN_MODES = ("company", "industry", "demo", "replay")
-LLM_MODES = ("coordinator_cli", "manual", "claude_cli", "skip")
+# python_agent_coordinator：Python 主会话 + 注册表 agent（精确 I/O）
+# 已移除 Claude Code 主会话 /rec（coordinator_cli）黑盒调度。
+LLM_MODES = ("python_agent_coordinator", "manual", "claude_cli", "skip")
 
 # 主线上一旦失败就无法继续的步骤（下游产物依赖其输出）。
 _FATAL_COMPANY_STEPS = {
@@ -200,7 +202,7 @@ class EventBus:
             with self.events_file.open("a", encoding="utf-8") as handle:
                 handle.write(json.dumps(event, ensure_ascii=False) + "\n")
         except OSError:
-            logger.warning("写入事件文件失败: %s", self.events_file, exc_info=True)
+            logger.warning("Failed to write event file: %s", self.events_file, exc_info=True)
 
     def load_events(self, events: list[dict[str, Any]]) -> None:
         """启动恢复时批量装载合法历史事件（不触发持久化与通知）。
@@ -369,7 +371,7 @@ class Run:
                 os.fsync(handle.fileno())
             os.replace(temp_path, meta_path)
         except OSError:
-            logger.warning("写入 meta.json 失败: %s", self.run_dir, exc_info=True)
+            logger.warning("Failed to write meta.json: %s", self.run_dir, exc_info=True)
         finally:
             try:
                 temp_path.unlink(missing_ok=True)
@@ -458,7 +460,7 @@ class StepLogThrottle:
                 "step_log",
                 self.step_id,
                 self.owner,
-                {"line": f"……日志过长，已折叠 {self.suppressed} 行"},
+                {"line": f"…Log output is long; {self.suppressed} lines have been collapsed"},
             )
 
     async def flush(self) -> None:
@@ -475,7 +477,7 @@ class StepLogThrottle:
                 "step_log",
                 self.step_id,
                 self.owner,
-                {"line": f"（本步共折叠 {self.suppressed} 行日志）"},
+                {"line": f"This step collapsed {self.suppressed} log lines in total"},
             )
 
 
@@ -523,7 +525,7 @@ async def _stream_subprocess(
             env=state_reader.subprocess_env(strip_claude=strip_claude_env),
         )
     except OSError as exc:
-        return -1, [f"启动子进程失败: {exc}"]
+        return -1, [f"Failed to start subprocess: {exc}"]
     run.procs.add(proc)
     try:
         try:
@@ -540,7 +542,7 @@ async def _stream_subprocess(
                 await proc.wait()
         except TimeoutError:
             await _terminate_process(proc)
-            tail.append("子进程执行超时，已被终止")
+            tail.append("Subprocess timed out and was terminated")
             return -2, list(tail)
         except asyncio.CancelledError:
             # 取消必须在 finally 移除登记之前完成进程树清理，否则外层守护器
@@ -558,7 +560,7 @@ async def _stream_subprocess(
 
 
 # ---------------------------------------------------------------------------
-# Claude Code coordinator stream-json
+# 控制台 owner 常量（demo / python coordinator 事件共用）
 # ---------------------------------------------------------------------------
 
 _COORDINATOR_OWNER = steps.ORCHESTRATOR
@@ -571,942 +573,13 @@ _KNOWN_AGENT_OWNERS = {
     steps.INDUSTRY_INFO_COLLECTOR,
     steps.INDUSTRY_RESEARCHER,
 }
-_AGENT_TOOL_NAMES = {"agent", "task"}
-_AGENT_NONTERMINAL_STATUSES = {
-    "",
-    "async_launched",
-    "launched",
-    "running",
-    "pending",
-    "queued",
-    "in_progress",
-    "in-progress",
-}
-_AGENT_TERMINAL_STATUSES = {"completed", "failed", "error", "cancelled", "canceled"}
-_WORK_ITEM_PREFIX_RE = re.compile(r"^\s*\[任务#(?P<id>[^\]]+)\]\s*(?P<title>.*)$")
-_TOOL_SUMMARY_LIMIT = 240
-
-
-def parse_claude_stream_line(line: str) -> tuple[dict[str, Any] | None, str | None]:
-    """解析一行 Claude Code NDJSON；坏行返回错误文本而不是抛异常。"""
-    try:
-        payload = json.loads(line)
-    except json.JSONDecodeError as exc:
-        return None, str(exc)
-    if not isinstance(payload, dict):
-        return None, "顶层 JSON 不是对象"
-    return payload, None
-
-
-@dataclass
-class CoordinatorProcessOutcome:
-    """一次完整 /rec Claude Code 进程的可审计结果。
-
-    参数：
-        exit_code: 操作系统进程退出码；超时使用 -2，启动失败使用 -1。
-        result: Claude Code 顶层 result 事件；未收到时为空字典。
-        stderr_tail: stderr 尾部文本行。
-        session_id: system/init 或 result 捕获的会话标识。
-    """
-
-    exit_code: int
-    result: dict[str, Any]
-    stderr_tail: list[str]
-    session_id: str | None
-
-
-class ClaudeCoordinatorEventMapper:
-    """把 Claude Code 顶层 stream-json 事件映射为控制台事件。
-
-    解析器刻意只依赖宽松字段访问：Claude Code 当前同时可能发出 Agent/Task
-    tool_use 与 system/task_* 事件，任一信号缺失时都能由另一条路径兜底。
-    """
-
-    def __init__(self, partial_interval: float | None = None):
-        self.partial_interval = (
-            config.COORDINATOR_PARTIAL_MESSAGE_INTERVAL_SECONDS
-            if partial_interval is None
-            else max(0.0, float(partial_interval))
-        )
-        self.session_id: str | None = None
-        self.result: dict[str, Any] = {}
-        self.partial_text = ""
-        self.partial_last_sent_text = ""
-        self.partial_last_sent_at = 0.0
-        self.active_agents: dict[str, dict[str, Any]] = {}
-        self.active_tools: dict[str, dict[str, Any]] = {}
-        self.pending_work_item_tools: dict[str, dict[str, Any]] = {}
-        self.work_items: dict[str, dict[str, Any]] = {}
-        self.started_agents: set[str] = set()
-        self.completed_agents: set[str] = set()
-        self.delegated_agents: set[str] = set()
-        self.delivered_agents: set[str] = set()
-        self.progress_markers: set[tuple[str, str]] = set()
-
-    @staticmethod
-    def _mapped(event_type: str, payload: dict[str, Any], owner: str | None = None) -> dict[str, Any]:
-        """构造一个待发布的控制台事件描述。"""
-        return {"type": event_type, "owner": owner, "payload": payload}
-
-    @staticmethod
-    def _owner(agent_name: str | None) -> str:
-        """把 custom agent 类型映射为前端 owner；未知类型保留原名便于审计。"""
-        name = str(agent_name or "").strip()
-        return name if name in _KNOWN_AGENT_OWNERS else (name or _COORDINATOR_OWNER)
-
-    @staticmethod
-    def _description_task_ref(description: str) -> tuple[str, str]:
-        """从 ``[任务#ID] 标题`` 约定中提取工作项关联。"""
-        text = str(description or "").strip()
-        matched = _WORK_ITEM_PREFIX_RE.match(text)
-        if not matched:
-            return "", text
-        return str(matched.group("id") or "").strip(), str(matched.group("title") or "").strip()
-
-    @staticmethod
-    def _bounded_summary(value: Any, limit: int = _TOOL_SUMMARY_LIMIT) -> str:
-        """把工具结果压缩为单行摘要，避免事件文件保存大段输出或敏感参数。"""
-        if isinstance(value, str):
-            text = value
-        elif value is None:
-            text = ""
-        else:
-            try:
-                text = json.dumps(value, ensure_ascii=False, default=str)
-            except (TypeError, ValueError):
-                text = str(value)
-        text = " ".join(text.split())
-        return text if len(text) <= limit else text[: max(0, limit - 1)] + "…"
-
-    def _agent_record(self, *keys: Any) -> dict[str, Any] | None:
-        """按 invocation/tool/task/parent id 查找活跃代理。"""
-        for key in keys:
-            text = str(key or "").strip()
-            if text and text in self.active_agents:
-                return self.active_agents[text]
-        return None
-
-    def _start_agent(
-        self,
-        *,
-        agent_name: str,
-        description: str = "",
-        tool_use_id: str = "",
-        task_id: str = "",
-        parent_invocation_id: str = "",
-    ) -> list[dict[str, Any]]:
-        """登记真实 Agent 启动，并发布一次委派事件。
-
-        assistant 的 Agent tool-use 与 system/task_started 会重复描述同一次调用，
-        因此以 invocation id 去重；Task 前缀只用于关联，不影响未遵守约定的调用展示。
-        """
-        existing = self._agent_record(tool_use_id, task_id)
-        work_item_id, clean_description = self._description_task_ref(description)
-        record = existing or {
-            "agent_name": agent_name or "agent",
-            "description": clean_description or description,
-            "tool_use_id": tool_use_id,
-            "task_id": task_id,
-            "parent_invocation_id": parent_invocation_id,
-            "work_item_id": work_item_id,
-        }
-        if agent_name:
-            record["agent_name"] = agent_name
-        if description:
-            record["description"] = clean_description or description
-        if work_item_id:
-            record["work_item_id"] = work_item_id
-        if parent_invocation_id:
-            record["parent_invocation_id"] = parent_invocation_id
-        if tool_use_id:
-            record["tool_use_id"] = tool_use_id
-            record["invocation_id"] = tool_use_id
-            self.active_agents[tool_use_id] = record
-        if task_id:
-            record["task_id"] = task_id
-            record["runtime_task_id"] = task_id
-            self.active_agents[task_id] = record
-        identity = str(record.get("invocation_id") or record.get("runtime_task_id") or f"{agent_name}:{description}")
-        record["invocation_id"] = identity
-        if identity in self.started_agents:
-            return []
-        self.started_agents.add(identity)
-        payload = {
-            "agent_name": str(record.get("agent_name") or "agent"),
-            "description": str(record.get("description") or ""),
-            "invocation_id": identity,
-        }
-        for source, target in (
-            ("tool_use_id", "tool_use_id"),
-            ("runtime_task_id", "runtime_task_id"),
-            ("parent_invocation_id", "parent_invocation_id"),
-            ("work_item_id", "work_item_id"),
-        ):
-            if record.get(source):
-                payload[target] = str(record[source])
-        owner = self._owner(payload["agent_name"])
-        events = [self._mapped("agent_started", payload, owner)]
-        if identity not in self.delegated_agents:
-            self.delegated_agents.add(identity)
-            events.append(
-                self._mapped(
-                    "handoff",
-                    {
-                        "kind": "delegation",
-                        "from_owner": _COORDINATOR_OWNER,
-                        "to_owner": owner,
-                        **payload,
-                    },
-                    _COORDINATOR_OWNER,
-                )
-            )
-        return events
-
-    def _complete_agent(
-        self,
-        *,
-        tool_use_id: str = "",
-        task_id: str = "",
-        status: str = "",
-        summary: str = "",
-        agent_name: str = "",
-        is_error: bool | None = None,
-    ) -> list[dict[str, Any]]:
-        """只在真实终态登记 Agent 完成，并发布结果回传事件。"""
-        normalized_status = str(status or "").strip().lower()
-        if normalized_status in _AGENT_NONTERMINAL_STATUSES:
-            record = self._agent_record(tool_use_id, task_id)
-            if record and task_id:
-                record["task_id"] = task_id
-                record["runtime_task_id"] = task_id
-                self.active_agents[task_id] = record
-            return []
-        if normalized_status and normalized_status not in _AGENT_TERMINAL_STATUSES and is_error is not True:
-            # 未知状态宁可继续等待权威 task_notification，也不能提前让小人“完成”。
-            return []
-
-        record = self._agent_record(tool_use_id, task_id) or {
-            "agent_name": agent_name or "agent",
-            "description": "",
-            "tool_use_id": tool_use_id,
-            "task_id": task_id,
-        }
-        if task_id:
-            self.active_agents[task_id] = record
-            record["task_id"] = task_id
-            record["runtime_task_id"] = task_id
-        if tool_use_id:
-            self.active_agents[tool_use_id] = record
-            record["tool_use_id"] = tool_use_id
-            record["invocation_id"] = tool_use_id
-        identity = str(record.get("invocation_id") or record.get("runtime_task_id") or f"{record.get('agent_name')}:{summary}")
-        if identity in self.completed_agents:
-            return []
-        self.completed_agents.add(identity)
-        failed = bool(is_error) if is_error is not None else normalized_status in {
-            "failed",
-            "error",
-            "cancelled",
-            "canceled",
-        }
-        payload = {
-            "agent_name": str(record.get("agent_name") or agent_name or "agent"),
-            "description": str(record.get("description") or ""),
-            "invocation_id": identity,
-            "is_error": failed,
-        }
-        for source, target in (
-            ("tool_use_id", "tool_use_id"),
-            ("runtime_task_id", "runtime_task_id"),
-            ("parent_invocation_id", "parent_invocation_id"),
-            ("work_item_id", "work_item_id"),
-        ):
-            if record.get(source):
-                payload[target] = str(record[source])
-        if summary:
-            payload["summary"] = self._bounded_summary(summary)
-        if status:
-            payload["status"] = status
-        owner = self._owner(payload["agent_name"])
-        events = [self._mapped("agent_completed", payload, owner)]
-        if identity not in self.delivered_agents:
-            self.delivered_agents.add(identity)
-            events.append(
-                self._mapped(
-                    "handoff",
-                    {
-                        "kind": "delivery",
-                        "from_owner": owner,
-                        "to_owner": _COORDINATOR_OWNER,
-                        **payload,
-                    },
-                    owner,
-                )
-            )
-        return events
-
-    def _start_tool_activity(
-        self,
-        *,
-        tool_name: str,
-        tool_use_id: str,
-        parent_invocation_id: str = "",
-    ) -> list[dict[str, Any]]:
-        """登记普通工具调用，并保留一条旧前端可读的兼容日志。"""
-        parent = self._agent_record(parent_invocation_id)
-        owner = self._owner(str((parent or {}).get("agent_name") or "")) if parent else _COORDINATOR_OWNER
-        record = {
-            "tool_name": tool_name or "unknown",
-            "tool_use_id": tool_use_id,
-            "parent_invocation_id": parent_invocation_id,
-            "invocation_id": str((parent or {}).get("invocation_id") or parent_invocation_id or ""),
-            "runtime_task_id": str((parent or {}).get("runtime_task_id") or ""),
-            "work_item_id": str((parent or {}).get("work_item_id") or ""),
-            "agent_name": str((parent or {}).get("agent_name") or owner),
-            "owner": owner,
-        }
-        if tool_use_id:
-            self.active_tools[tool_use_id] = record
-        payload = {"phase": "started", **{key: value for key, value in record.items() if value}}
-        return [
-            self._mapped("tool_activity", payload, owner),
-            self._mapped(
-                "coordinator_message",
-                {
-                    "text": f"{record['agent_name']} 调用工具 {record['tool_name']}",
-                    "partial": False,
-                    "tool_use_id": tool_use_id,
-                    "compat_for": "tool_activity",
-                },
-                owner,
-            ),
-        ]
-
-    def _complete_tool_activity(
-        self,
-        *,
-        tool_use_id: str,
-        block: dict[str, Any],
-        tool_use_result: dict[str, Any],
-    ) -> list[dict[str, Any]]:
-        """把普通工具结果映射成同一 tool id 的终态活动。"""
-        record = self.active_tools.pop(tool_use_id, None)
-        if not record:
-            return []
-        is_error = bool(block.get("is_error"))
-        raw_content = block.get("content")
-        status = str(tool_use_result.get("status") or ("error" if is_error else "completed"))
-        payload = {
-            "phase": "completed",
-            **{key: value for key, value in record.items() if value},
-            "status": status,
-            "is_error": is_error,
-        }
-        summary = self._bounded_summary(raw_content)
-        if summary:
-            payload["summary"] = summary
-        return [self._mapped("tool_activity", payload, str(record.get("owner") or _COORDINATOR_OWNER))]
-
-    def _work_item_upsert_from_result(
-        self,
-        *,
-        tool_use_id: str,
-        tool_use_result: dict[str, Any],
-        is_error: bool,
-    ) -> list[dict[str, Any]]:
-        """在 TaskCreate/TaskUpdate 返回后发布稳定的工作项快照。"""
-        pending = self.pending_work_item_tools.pop(tool_use_id, None)
-        if not pending:
-            return []
-        tool_name = str(pending.get("tool_name") or "")
-        tool_input = pending.get("input") if isinstance(pending.get("input"), dict) else {}
-        task_result = tool_use_result.get("task") if isinstance(tool_use_result.get("task"), dict) else {}
-        work_item_id = str(
-            task_result.get("id")
-            or tool_input.get("taskId")
-            or tool_input.get("task_id")
-            or ""
-        ).strip()
-        if not work_item_id:
-            return []
-        existing = dict(self.work_items.get(work_item_id) or {})
-        if tool_name.lower() == "taskcreate":
-            existing.update(
-                {
-                    "work_item_id": work_item_id,
-                    "title": str(task_result.get("subject") or tool_input.get("subject") or "").strip(),
-                    "description": str(tool_input.get("description") or "").strip(),
-                    "active_form": str(tool_input.get("activeForm") or tool_input.get("active_form") or "").strip(),
-                    "status": "failed" if is_error else "pending",
-                    "blocked_by": list(tool_input.get("blockedBy") or tool_input.get("blocked_by") or []),
-                }
-            )
-        else:
-            existing.setdefault("work_item_id", work_item_id)
-            for source, target in (
-                ("subject", "title"),
-                ("description", "description"),
-                ("activeForm", "active_form"),
-                ("status", "status"),
-                ("owner", "owner"),
-            ):
-                if tool_input.get(source) is not None:
-                    existing[target] = tool_input[source]
-            if tool_input.get("addBlockedBy") is not None:
-                existing["blocked_by"] = list(tool_input.get("addBlockedBy") or [])
-            if is_error:
-                existing["status"] = "failed"
-        self.work_items[work_item_id] = existing
-        return [self._mapped("work_item_upsert", existing, str(existing.get("owner") or _COORDINATOR_OWNER))]
-
-    def _flush_partial(self, now: float, force: bool = False) -> list[dict[str, Any]]:
-        """按时间间隔发布累计文本增量；强制刷新用于 block/message 结束。"""
-        text = self.partial_text.strip()
-        if not text or text == self.partial_last_sent_text:
-            return []
-        if not force and now - self.partial_last_sent_at < self.partial_interval:
-            return []
-        self.partial_last_sent_text = text
-        self.partial_last_sent_at = now
-        return [self._mapped("coordinator_message", {"text": text, "partial": True}, _COORDINATOR_OWNER)]
-
-    def map_event(self, event: dict[str, Any], now: float | None = None) -> list[dict[str, Any]]:
-        """解析一条 Claude Code 顶层事件并返回零到多条控制台事件。"""
-        if not isinstance(event, dict):
-            return []
-        now_value = time.monotonic() if now is None else float(now)
-        event_type = str(event.get("type") or "")
-        subtype = str(event.get("subtype") or "")
-        mapped: list[dict[str, Any]] = []
-
-        if event_type == "system" and subtype == "init":
-            self.session_id = str(event.get("session_id") or "").strip() or self.session_id
-            payload = {"session_id": self.session_id or "", "execution_mode": "coordinator_cli"}
-            mapped.append(self._mapped("coordinator_session_started", payload, _COORDINATOR_OWNER))
-            failed_mcps = [
-                str(item.get("name") or item.get("server") or "unknown")
-                for item in (event.get("mcp_servers") or [])
-                if isinstance(item, dict) and str(item.get("status") or "").lower() == "failed"
-            ]
-            if failed_mcps:
-                mapped.append(
-                    self._mapped(
-                        "coordinator_message",
-                        {"text": "可选 MCP 初始化失败（运行继续）: " + ", ".join(failed_mcps), "partial": False},
-                        _COORDINATOR_OWNER,
-                    )
-                )
-            return mapped
-
-        if event_type == "system" and subtype == "task_started":
-            task_type = str(event.get("task_type") or "").lower()
-            tool_use_id = str(event.get("tool_use_id") or "")
-            task_id = str(event.get("task_id") or "")
-            subagent_type = str(event.get("subagent_type") or event.get("agent_type") or "")
-            if task_type == "local_agent" or subagent_type:
-                return self._start_agent(
-                    agent_name=subagent_type or "agent",
-                    description=str(event.get("description") or ""),
-                    tool_use_id=tool_use_id,
-                    task_id=task_id,
-                    parent_invocation_id=str(event.get("parent_tool_use_id") or ""),
-                )
-            # 后台 Bash 等进程属于已有工具调用，不得制造一个不存在的 agent 角色。
-            tool_record = self.active_tools.get(tool_use_id)
-            if tool_record:
-                tool_record["runtime_task_id"] = task_id
-                if event.get("description"):
-                    tool_record["description"] = str(event.get("description") or "")
-            return []
-
-        if event_type == "system" and subtype == "task_progress":
-            record = self._agent_record(event.get("tool_use_id"), event.get("task_id"))
-            agent_name = str((record or {}).get("agent_name") or event.get("subagent_type") or _COORDINATOR_OWNER)
-            owner = self._owner(agent_name)
-            last_tool = str(event.get("last_tool_name") or "").strip()
-            marker = (str(event.get("task_id") or event.get("tool_use_id") or agent_name), last_tool)
-            if last_tool and marker not in self.progress_markers:
-                self.progress_markers.add(marker)
-                payload = {
-                    "phase": "observed",
-                    "tool_name": last_tool,
-                    "agent_name": agent_name,
-                    "inferred": True,
-                }
-                if record:
-                    payload["invocation_id"] = str(record.get("invocation_id") or "")
-                    payload["runtime_task_id"] = str(record.get("runtime_task_id") or event.get("task_id") or "")
-                    if record.get("work_item_id"):
-                        payload["work_item_id"] = str(record["work_item_id"])
-                return [
-                    self._mapped("tool_activity", payload, owner),
-                    self._mapped(
-                        "coordinator_message",
-                        {
-                            "text": f"{agent_name} 正在使用 {last_tool}",
-                            "partial": False,
-                            "agent_name": agent_name,
-                            "compat_for": "tool_activity",
-                        },
-                        owner,
-                    ),
-                ]
-            return []
-
-        if event_type == "system" and subtype == "task_notification":
-            tool_use_id = str(event.get("tool_use_id") or "")
-            if self._agent_record(tool_use_id, event.get("task_id")):
-                return self._complete_agent(
-                    tool_use_id=tool_use_id,
-                    task_id=str(event.get("task_id") or ""),
-                    status=str(event.get("status") or ""),
-                    summary=str(event.get("summary") or ""),
-                )
-            tool_record = self.active_tools.pop(tool_use_id, None)
-            if tool_record:
-                payload = {
-                    "phase": "completed",
-                    **{key: value for key, value in tool_record.items() if value},
-                    "status": str(event.get("status") or "completed"),
-                    "is_error": str(event.get("status") or "").lower() in {"failed", "error", "cancelled", "canceled"},
-                    "summary": self._bounded_summary(event.get("summary")),
-                }
-                return [self._mapped("tool_activity", payload, str(tool_record.get("owner") or _COORDINATOR_OWNER))]
-            return []
-
-        if event_type == "stream_event":
-            inner = event.get("event") if isinstance(event.get("event"), dict) else {}
-            inner_type = str(inner.get("type") or "")
-            if inner_type == "content_block_start":
-                block = inner.get("content_block") if isinstance(inner.get("content_block"), dict) else {}
-                if block.get("type") == "text":
-                    self.partial_text = str(block.get("text") or "")
-                    self.partial_last_sent_text = ""
-                return []
-            if inner_type == "content_block_delta":
-                delta = inner.get("delta") if isinstance(inner.get("delta"), dict) else {}
-                if delta.get("type") == "text_delta":
-                    self.partial_text += str(delta.get("text") or "")
-                    return self._flush_partial(now_value)
-                return []
-            if inner_type in {"content_block_stop", "message_stop"}:
-                flushed = self._flush_partial(now_value, force=True)
-                if inner_type == "content_block_stop":
-                    self.partial_text = ""
-                    self.partial_last_sent_text = ""
-                return flushed
-            return []
-
-        if event_type == "assistant":
-            message = event.get("message") if isinstance(event.get("message"), dict) else {}
-            content = message.get("content") if isinstance(message.get("content"), list) else []
-            parent_id = str(event.get("parent_tool_use_id") or message.get("parent_tool_use_id") or "")
-            parent = self._agent_record(parent_id)
-            message_owner = self._owner(str((parent or {}).get("agent_name") or "")) if parent_id else _COORDINATOR_OWNER
-            text_blocks = [str(block.get("text") or "") for block in content if isinstance(block, dict) and block.get("type") == "text"]
-            full_text = "\n".join(text for text in text_blocks if text.strip()).strip()
-            if full_text:
-                self.partial_text = ""
-                self.partial_last_sent_text = ""
-                payload = {"text": full_text, "partial": False}
-                if parent:
-                    payload["agent_name"] = str(parent.get("agent_name") or "agent")
-                mapped.append(self._mapped("coordinator_message", payload, message_owner))
-            for block in content:
-                if not isinstance(block, dict) or block.get("type") != "tool_use":
-                    continue
-                tool_name = str(block.get("name") or "")
-                tool_input = block.get("input") if isinstance(block.get("input"), dict) else {}
-                tool_use_id = str(block.get("id") or "")
-                lowered_tool = tool_name.lower()
-                if lowered_tool in _AGENT_TOOL_NAMES:
-                    mapped.extend(
-                        self._start_agent(
-                            agent_name=str(tool_input.get("subagent_type") or tool_input.get("agent_type") or "agent"),
-                            description=str(tool_input.get("description") or ""),
-                            tool_use_id=tool_use_id,
-                            parent_invocation_id=parent_id,
-                        )
-                    )
-                elif lowered_tool in {"taskcreate", "taskupdate"}:
-                    self.pending_work_item_tools[tool_use_id] = {
-                        "tool_name": tool_name,
-                        "input": dict(tool_input),
-                    }
-                    mapped.append(
-                        self._mapped(
-                            "coordinator_message",
-                            {
-                                "text": f"调用工具 {tool_name}",
-                                "partial": False,
-                                "tool_use_id": tool_use_id,
-                                "compat_for": "work_item_upsert",
-                            },
-                            message_owner,
-                        )
-                    )
-                else:
-                    mapped.extend(
-                        self._start_tool_activity(
-                            tool_name=tool_name or "unknown",
-                            tool_use_id=tool_use_id,
-                            parent_invocation_id=parent_id,
-                        )
-                    )
-            return mapped
-
-        if event_type == "user":
-            message = event.get("message") if isinstance(event.get("message"), dict) else {}
-            content = message.get("content") if isinstance(message.get("content"), list) else []
-            tool_use_result = event.get("tool_use_result") if isinstance(event.get("tool_use_result"), dict) else {}
-            for block in content:
-                if not isinstance(block, dict) or block.get("type") != "tool_result":
-                    continue
-                tool_use_id = str(block.get("tool_use_id") or "")
-                is_error = bool(block.get("is_error"))
-                if tool_use_id in self.pending_work_item_tools:
-                    mapped.extend(
-                        self._work_item_upsert_from_result(
-                            tool_use_id=tool_use_id,
-                            tool_use_result=tool_use_result,
-                            is_error=is_error,
-                        )
-                    )
-                    continue
-
-                record = self._agent_record(tool_use_id)
-                if record:
-                    status = str(tool_use_result.get("status") or "").strip()
-                    task_id = str(
-                        tool_use_result.get("task_id")
-                        or tool_use_result.get("taskId")
-                        or ""
-                    ).strip()
-                    if task_id:
-                        record["task_id"] = task_id
-                        record["runtime_task_id"] = task_id
-                        self.active_agents[task_id] = record
-                    mapped.extend(
-                        self._complete_agent(
-                            tool_use_id=tool_use_id,
-                            task_id=task_id,
-                            status=status,
-                            summary=self._bounded_summary(block.get("content")),
-                            agent_name=str(tool_use_result.get("agentType") or ""),
-                            is_error=is_error if is_error else None,
-                        )
-                    )
-                    continue
-
-                tool_events = self._complete_tool_activity(
-                    tool_use_id=tool_use_id,
-                    block=block,
-                    tool_use_result=tool_use_result,
-                )
-                if tool_events:
-                    mapped.extend(tool_events)
-                elif is_error:
-                    mapped.append(
-                        self._mapped(
-                            "coordinator_message",
-                            {"text": f"工具调用返回错误（tool_use_id={tool_use_id}）", "partial": False},
-                            _COORDINATOR_OWNER,
-                        )
-                    )
-            return mapped
-
-        if event_type == "result":
-            self.result = dict(event)
-            self.session_id = str(event.get("session_id") or "").strip() or self.session_id
-            denials = event.get("permission_denials")
-            if isinstance(denials, list) and denials:
-                mapped.append(
-                    self._mapped(
-                        "coordinator_message",
-                        {"text": f"Claude Code 报告 {len(denials)} 项 permission denial，最终交付将降级", "partial": False},
-                        _COORDINATOR_OWNER,
-                    )
-                )
-            return mapped
-
-        return []
-
-
-async def _terminate_process(proc: Any) -> None:
-    """在取消/超时时统一终止目标进程及其子进程树。"""
-    await state_reader.terminate_subprocess(proc)
-
-
-def _resolve_claude_executable() -> str | None:
-    """优先解析 npm 包内原生 claude.exe，避免 Windows .cmd shim 遗留子进程。
-
-    ``shutil.which('claude')`` 在 Windows 常返回 npm/claude.CMD。直接启动该 shim
-    会生成额外 cmd.exe；外层 cmd 先退出后，Python 失去对真实 claude.exe 的控制。
-    """
-    found = shutil.which("claude")
-    if not found:
-        return None
-    path = Path(found)
-    if os.name == "nt" and path.suffix.lower() in {".cmd", ".bat"}:
-        native = path.parent / "node_modules" / "@anthropic-ai" / "claude-code" / "bin" / "claude.exe"
-        if native.exists():
-            return str(native)
-    return str(path)
-
-
-async def _iter_ndjson_lines(
-    reader: asyncio.StreamReader,
-    *,
-    max_line_bytes: int | None = None,
-):
-    """分块读取 NDJSON，绕过 StreamReader.readline() 的 64 KiB 分隔符限制。
-
-    Claude Code 的顶层 assistant/tool_result 事件可能内嵌长报告，单行达到数十 MiB。
-    使用 read() 主动排空传输缓冲，再自行按换行拆分；仅在单行超过显式安全上限时失败。
-    """
-    limit = int(max_line_bytes or config.COORDINATOR_STREAM_LIMIT_BYTES)
-    buffer = bytearray()
-    while True:
-        chunk = await reader.read(64 * 1024)
-        if not chunk:
-            break
-        buffer.extend(chunk)
-        while True:
-            newline = buffer.find(b"\n")
-            if newline < 0:
-                break
-            line = bytes(buffer[:newline])
-            del buffer[: newline + 1]
-            yield line.rstrip(b"\r")
-        if len(buffer) > limit:
-            raise ValueError(f"Claude stream-json 单行超过安全上限 {limit} bytes")
-    if buffer:
-        yield bytes(buffer).rstrip(b"\r")
-
-
-async def _stream_claude_coordinator(
-    run: Run,
-    prompt: str,
-    mapper: ClaudeCoordinatorEventMapper | None = None,
-) -> CoordinatorProcessOutcome:
-    """启动一个完整 /rec Claude Code 会话并逐行消费 stream-json。
-
-    stdout 必须保持纯 NDJSON，因此 stderr 单独读取；每条原始 stdout 行都会先写入
-    run 目录，再做宽容 JSON 解析。单条坏 JSON 只发警告，不终止整个研究。
-    """
-    mapper = mapper or ClaudeCoordinatorEventMapper()
-    claude_path = _resolve_claude_executable()
-    if not claude_path:
-        return CoordinatorProcessOutcome(-1, {}, ["未找到 claude CLI"], None)
-    cmd = steps.build_claude_stream_command(prompt, claude_path)
-    # 先剥离父会话遗留的 CLAUDE* 变量，避免嵌套会话冲突；随后只恢复 print
-    # 模式后台等待配置。财务分析和估值可能运行十几分钟，不能被 Claude CLI
-    # 默认的 600 秒后台等待上限提前停止，真正的总时限由外层协调超时控制。
-    coordinator_env = state_reader.subprocess_env(strip_claude=True)
-    coordinator_env["CLAUDE_CODE_PRINT_BG_WAIT_CEILING_MS"] = str(
-        config.COORDINATOR_PRINT_BG_WAIT_CEILING_MS
-    )
-    try:
-        proc = await asyncio.create_subprocess_exec(
-            *cmd,
-            cwd=str(config.PROJECT_ROOT),
-            stdin=asyncio.subprocess.DEVNULL,
-            stdout=asyncio.subprocess.PIPE,
-            stderr=asyncio.subprocess.PIPE,
-            env=coordinator_env,
-        )
-    except OSError as exc:
-        return CoordinatorProcessOutcome(-1, {}, [f"启动 claude CLI 失败: {exc}"], None)
-
-    run.procs.add(proc)
-    run.coordinator_pid = int(proc.pid) if proc.pid is not None else None
-    run.persist_meta()
-    stderr_tail: deque[str] = deque(maxlen=80)
-    raw_handle = None
-    raw_path = run.run_dir / config.COORDINATOR_EVENTS_FILENAME if run.run_dir else None
-    if raw_path:
-        raw_path.parent.mkdir(parents=True, exist_ok=True)
-        raw_handle = raw_path.open("a", encoding="utf-8", newline="\n")
-        await run.bus.publish(
-            run.run_id,
-            "artifact_created",
-            owner=_COORDINATOR_OWNER,
-            payload={"path": str(raw_path), "name": raw_path.name, "kind": "jsonl"},
-        )
-
-    async def publish_mapped(items: list[dict[str, Any]]) -> None:
-        for item in items:
-            if mapper.session_id and mapper.session_id != run.claude_session_id:
-                run.claude_session_id = mapper.session_id
-                run.persist_meta()
-            await run.bus.publish(
-                run.run_id,
-                str(item.get("type") or "coordinator_message"),
-                owner=str(item.get("owner") or "") or None,
-                payload=item.get("payload") if isinstance(item.get("payload"), dict) else {},
-            )
-
-    async def drain_stderr() -> None:
-        assert proc.stderr is not None
-        sent = 0
-        async for raw in _iter_ndjson_lines(proc.stderr):
-            line = raw.decode("utf-8", errors="replace")
-            if not line:
-                continue
-            stderr_tail.append(line)
-            important = any(word in line.lower() for word in ("error", "fail", "warning", "denied", "错误", "失败", "警告"))
-            if sent < 30 or important:
-                sent += 1
-                await run.bus.publish(
-                    run.run_id,
-                    "coordinator_message",
-                    owner=_COORDINATOR_OWNER,
-                    payload={"text": line[:800], "partial": False, "stream": "stderr"},
-                )
-
-    stderr_task = asyncio.create_task(drain_stderr(), name=f"{run.run_id}:coordinator-stderr")
-    try:
-        try:
-            async with asyncio.timeout(config.COORDINATOR_TIMEOUT_SECONDS):
-                assert proc.stdout is not None
-                line_count = 0
-                async for raw in _iter_ndjson_lines(proc.stdout):
-                    line_count += 1
-                    # input_json_delta / thinking_delta 可能在极短时间内堆积数千行；
-                    # 分块 reader 命中内存缓冲时也可能连续完成，故每 50 行显式让出，
-                    # 保证 FastAPI REST/SSE 与状态观察器不会被饿死。
-                    if line_count % 50 == 0:
-                        await asyncio.sleep(0)
-                    line = raw.decode("utf-8", errors="replace")
-                    if raw_handle is not None:
-                        raw_handle.write(line + "\n")
-                        raw_handle.flush()
-                    event, parse_error = parse_claude_stream_line(line)
-                    if event is None:
-                        await run.bus.publish(
-                            run.run_id,
-                            "coordinator_message",
-                            owner=_COORDINATOR_OWNER,
-                            payload={"text": f"stream-json 坏行已跳过: {parse_error}", "partial": False, "warning": True},
-                        )
-                        continue
-                    await publish_mapped(mapper.map_event(event, now=asyncio.get_running_loop().time()))
-                await proc.wait()
-                await stderr_task
-        except TimeoutError:
-            await _terminate_process(proc)
-            return CoordinatorProcessOutcome(-2, mapper.result, list(stderr_tail) + ["协调会话执行超时，已终止"], mapper.session_id)
-        except asyncio.CancelledError:
-            await _terminate_process(proc)
-            if not stderr_task.done():
-                stderr_task.cancel()
-                try:
-                    await stderr_task
-                except asyncio.CancelledError:
-                    pass
-            raise
-        except Exception:
-            # 解析器、文件写入或映射器出现未预期异常时也必须先终止进程树；
-            # 否则 finally 从 run.procs 移除后，外层取消逻辑将无法再找到该进程。
-            await _terminate_process(proc)
-            raise
-        if mapper.session_id and mapper.session_id != run.claude_session_id:
-            run.claude_session_id = mapper.session_id
-            run.persist_meta()
-        return CoordinatorProcessOutcome(proc.returncode or 0, mapper.result, list(stderr_tail), mapper.session_id)
-    finally:
-        if not stderr_task.done():
-            stderr_task.cancel()
-            try:
-                await stderr_task
-            except asyncio.CancelledError:
-                pass
-        if raw_handle is not None:
-            raw_handle.close()
-        run.procs.discard(proc)
-        run.coordinator_pid = None
-        run.persist_meta()
-
-
-# ---------------------------------------------------------------------------
-# Engine
-# ---------------------------------------------------------------------------
-
-def _cleanup_persisted_coordinator(pid: int, run_id: str) -> bool:
-    """安全确认并清理服务崩溃后遗留的 coordinator 进程。
-
-    返回 True 表示目标已不存在、PID 已被复用为无关进程或已成功清理；False 表示
-    无法确认/终止，此时恢复逻辑必须保留工作区租约，不能贸然启动第二个写者。
-    进程身份同时校验 ``claude`` 与命令行中的 run_id，避免只凭可复用 PID 误杀。
-    """
-    if pid <= 0:
-        return True
-    if os.name == "nt":
-        query = (
-            "$p=Get-CimInstance Win32_Process -Filter \"ProcessId = "
-            + str(pid)
-            + "\"; if ($null -ne $p) { $p.CommandLine }"
-        )
-        try:
-            result = subprocess.run(
-                ["powershell", "-NoProfile", "-NonInteractive", "-Command", query],
-                capture_output=True,
-                text=True,
-                timeout=10,
-                encoding="utf-8",
-                errors="replace",
-            )
-        except (OSError, subprocess.SubprocessError):
-            logger.warning("无法核验恢复 run 的 coordinator PID: run=%s pid=%s", run_id, pid, exc_info=True)
-            return False
-        command_line = result.stdout.strip()
-        if result.returncode != 0:
-            return False
-        if not command_line:
-            return True
-        if run_id not in command_line or "claude" not in command_line.lower():
-            # PID 已被复用或不是本 run 的 coordinator，绝不误杀。
-            return True
-        try:
-            killed = subprocess.run(
-                ["taskkill", "/PID", str(pid), "/T", "/F"],
-                capture_output=True,
-                timeout=15,
-            )
-        except (OSError, subprocess.SubprocessError):
-            logger.warning("清理遗留 coordinator 失败: run=%s pid=%s", run_id, pid, exc_info=True)
-            return False
-        return killed.returncode == 0
-
-    proc_cmdline = Path(f"/proc/{pid}/cmdline")
-    if proc_cmdline.exists():
-        try:
-            command_line = proc_cmdline.read_bytes().replace(b"\x00", b" ").decode("utf-8", errors="replace")
-        except OSError:
-            return False
-        if run_id not in command_line or "claude" not in command_line.lower():
-            return True
-        try:
-            os.kill(pid, signal.SIGTERM)
-        except ProcessLookupError:
-            return True
-        except OSError:
-            return False
-        return True
-    try:
-        os.kill(pid, 0)
-    except ProcessLookupError:
-        return True
-    except OSError:
-        return False
-    return False
 
 
 class WorkspaceLeaseConflict(RuntimeError):
     """同一正式公司工作区已有活动 run。"""
 
     def __init__(self, lease_key: str, run_id: str):
-        super().__init__(f"研究目标正在运行: {run_id}")
+        super().__init__(f"The research target is already running: {run_id}")
         self.lease_key = lease_key
         self.run_id = run_id
 
@@ -1549,7 +622,7 @@ class Engine:
             try:
                 meta = json.loads(meta_file.read_text(encoding="utf-8"))
             except (OSError, json.JSONDecodeError):
-                logger.warning("跳过损坏的 run 元信息: %s", meta_file)
+                logger.warning("Skipped corrupted run metadata: %s", meta_file)
                 continue
             run_id = str(meta.get("run_id") or meta_file.parent.name)
             run = Run(
@@ -1563,8 +636,8 @@ class Engine:
             run.status = str(meta.get("status") or "failed")
             run.claude_session_id = str(meta.get("claude_session_id") or "") or None
             run.execution_mode = str(meta.get("execution_mode") or "") or None
-            coordinator_pid = meta.get("coordinator_pid")
-            run.coordinator_pid = int(coordinator_pid) if isinstance(coordinator_pid, int) else None
+            # 历史 meta 可能仍含 coordinator_pid（旧 /rec 主会话）；不再恢复或清理该进程。
+            run.coordinator_pid = None
             events: list[dict[str, Any]] = []
             events_file = meta_file.parent / "events.jsonl"
             if events_file.exists():
@@ -1580,17 +653,8 @@ class Engine:
                         if isinstance(event, dict):
                             events.append(event)
                 except OSError:
-                    logger.warning("读取事件文件失败: %s", events_file, exc_info=True)
+                    logger.warning("Failed to read event file: %s", events_file, exc_info=True)
             run.bus.load_events(events)
-            if run.coordinator_pid:
-                cleaned = _cleanup_persisted_coordinator(run.coordinator_pid, run_id)
-                if cleaned:
-                    run.coordinator_pid = None
-                else:
-                    run.orphan_process_unresolved = True
-                    if run.mode == "company":
-                        run.workspace_lease_key = self._company_lease_key(run.params)
-                        self._workspace_leases[run.workspace_lease_key] = run_id
             terminal_events = [event for event in run.bus.events if event.get("type") == "run_completed"]
             if terminal_events:
                 # terminal 已经 durable、meta 仍为 running 是正常的崩溃窗口；以最后一个
@@ -1601,7 +665,7 @@ class Engine:
             elif run.status == "running":
                 # 服务重启且事件中确实没有终态：补中断诊断与唯一失败终态。
                 run.status = "failed"
-                run.bus.append_recovered(run_id, "run_error", {"error": "服务重启，运行被中断"})
+                run.bus.append_recovered(run_id, "run_error", {"error": "The service restarted and interrupted the run"})
                 run.bus.append_recovered(run_id, "run_completed", {"status": "failed"})
                 run.persist_meta()
             self.runs[run_id] = run
@@ -1613,7 +677,7 @@ class Engine:
         report_year = str(normalized.get("report_year") or "").strip()
         fiscal_year = str(normalized.get("fiscal_year") or "").strip()
         if report_year and fiscal_year and report_year != fiscal_year:
-            raise ValueError(f"report_year={report_year} 与 fiscal_year={fiscal_year} 冲突")
+            raise ValueError(f"report_year={report_year} conflicts with fiscal_year={fiscal_year}")
         year = report_year or fiscal_year
         if year:
             normalized["report_year"] = year
@@ -1650,9 +714,23 @@ class Engine:
             state, code, _ = await state_reader.run_audit(normalized_params, write_state=False)
             if code == 0 and state:
                 target = state.get("target", {}) if isinstance(state.get("target"), dict) else {}
-                for key in ("stock_code", "company_name", "report_year", "report_type"):
+                for key in ("stock_code", "company_name"):
                     if target.get(key) and not normalized_params.get(key):
                         normalized_params[key] = target[key]
+                filing_policy = str(state.get("filing_policy") or (state.get("request") or {}).get("filing_policy") or "")
+                if filing_policy:
+                    normalized_params.setdefault("filing_policy", filing_policy)
+                normalized_params.setdefault("annual_lookback", int((state.get("request") or {}).get("annual_lookback") or 2))
+                if filing_policy == "single_filing":
+                    for key in ("report_year", "report_type"):
+                        if target.get(key) and not normalized_params.get(key):
+                            normalized_params[key] = target[key]
+                resolved_code = str(target.get("stock_code") or "").strip()
+                if re.fullmatch(r"\d{6}", resolved_code):
+                    raw_target = str(normalized_params.get("target") or "").strip()
+                    if raw_target and raw_target != resolved_code:
+                        normalized_params.setdefault("input_target", raw_target)
+                    normalized_params["target"] = resolved_code
                 lease_key = self._company_lease_key(normalized_params, state)
             else:
                 lease_key = self._company_lease_key(normalized_params)
@@ -1703,7 +781,10 @@ class Engine:
         if lease_key:
             self._workspace_leases[lease_key] = run_id
         if mode == "company":
-            run.execution_mode = "coordinator_cli" if llm_mode == "coordinator_cli" else "legacy_dag"
+            if llm_mode == "python_agent_coordinator":
+                run.execution_mode = "python_agent_coordinator"
+            else:
+                run.execution_mode = "legacy_dag"
         else:
             run.execution_mode = mode
         run.persist_meta()
@@ -1738,9 +819,9 @@ class Engine:
                 if not self._has_terminal_event(run):
                     await run.bus.publish(run.run_id, "run_completed", payload={"status": "cancelled"})
             except Exception:
-                logger.warning("发布取消事件失败: %s", run.run_id, exc_info=True)
+                logger.warning("Failed to publish cancellation event: %s", run.run_id, exc_info=True)
         except Exception as exc:
-            logger.exception("run %s 执行异常", run.run_id)
+            logger.exception("Run %s failed with an exception", run.run_id)
             await self._cancel_child_tasks(run)
             await self._kill_procs(run)
             run.status = "failed"
@@ -1749,7 +830,7 @@ class Engine:
                     await run.bus.publish(run.run_id, "run_error", payload={"error": str(exc)})
                     await run.bus.publish(run.run_id, "run_completed", payload={"status": "failed"})
             except Exception:
-                logger.warning("发布失败事件失败: %s", run.run_id, exc_info=True)
+                logger.warning("Failed to publish failure event: %s", run.run_id, exc_info=True)
         finally:
             await self._cancel_child_tasks(run)
             await self._kill_procs(run)
@@ -1798,7 +879,7 @@ class Engine:
         参数：
             run_id: 运行标识。
         返回值：
-            成功发起取消返回 True；run 不存在或已结束返回 False。
+            成功发起取消返回 True；Run not found or already finished返回 False。
         """
         run = self.runs.get(run_id)
         if not run or run.status != "running" or not run.task:
@@ -1833,10 +914,10 @@ class Engine:
         """
         run = self.runs.get(run_id)
         if not run or run.status != "running":
-            return False, ["run 不存在或已结束"]
+            return False, ["Run not found or already finished"]
         groups = run.llm_artifact_groups.get(step_id)
         if not groups:
-            return False, ["该步骤未处于等待 LLM 产物状态"]
+            return False, ["This step is not waiting for LLM artifacts"]
         missing = _best_group_missing(groups, run.llm_artifact_baselines.get(step_id))
         if missing and not force:
             return False, missing
@@ -1942,7 +1023,7 @@ class _CompanyPipeline:
         self.freshness = str(params.get("market_context_freshness") or "oneMonth")
         self.run_market_context = params.get("run_market_context", True) is not False
         self.state: dict[str, Any] | None = None
-        self.ctx: dict[str, str] = {}
+        self.ctx: dict[str, Any] = {}
         self.allow_incomplete_digest = False
         self.backflow_sent: set[str] = set()
         # legacy 主线与 market_context 并行完成时会同时刷新状态；串行 audit 防止
@@ -1965,7 +1046,9 @@ class _CompanyPipeline:
             "stock_code": params.get("stock_code") or "",
             "company_name": params.get("company_name") or "",
             "report_year": params.get("report_year") or params.get("fiscal_year") or "",
-            "report_type": params.get("report_type") or "annual",
+            "report_type": params.get("report_type") or "",
+            "filing_policy": params.get("filing_policy") or "",
+            "annual_lookback": int(params.get("annual_lookback") or 2),
             "depth": self.depth,
             "focus": self.focus,
             "as_of_date": self.as_of_date,
@@ -1983,16 +1066,35 @@ class _CompanyPipeline:
         state = self.state or {}
         target = state.get("target", {}) or {}
         layers = state.get("layers", {}) or {}
+        filings = state.get("filings") if isinstance(state.get("filings"), list) else []
+        primary_filing = next(
+            (
+                item
+                for item in filings
+                if str(item.get("report_type") or "") == str(target.get("report_type") or "")
+                and str(item.get("report_year") or "") == str(target.get("report_year") or "")
+            ),
+            filings[-1] if filings else {},
+        )
 
         def art(layer: str, key: str) -> str:
             info = layers.get(layer, {}).get("artifacts", {}).get(key, {})
+            if not isinstance(info, dict) or not info.get("path"):
+                info = (primary_filing.get(layer) or {}).get("artifacts", {}).get(key, {})
             return str(info.get("path") or "") if isinstance(info, dict) else ""
 
         def report_dir(layer: str) -> str:
             info = layers.get(layer, {}).get("report_dir", {})
+            if not isinstance(info, dict) or not info.get("path"):
+                info = (primary_filing.get(layer) or {}).get("report_dir", {})
             return str(info.get("path") or "") if isinstance(info, dict) else ""
 
         ctx = self.ctx
+        ctx["filing_policy"] = str(state.get("filing_policy") or self.run.params.get("filing_policy") or "")
+        ctx["filings"] = filings
+        ctx["filing_plan"] = state.get("filing_plan") if isinstance(state.get("filing_plan"), list) else []
+        ctx["financial_input_fingerprint"] = str(state.get("financial_input_fingerprint") or "")
+        ctx["research_state_path"] = str(state_reader.state_file_path(state)) if state else ""
         ctx["stock_code"] = str(target.get("stock_code") or self.run.params.get("stock_code") or self.run.params.get("target") or "")
         ctx["company_name"] = str(target.get("company_name") or self.run.params.get("company_name") or "")
         ctx["report_year"] = str(target.get("report_year") or self.run.params.get("report_year") or "")
@@ -2019,15 +1121,22 @@ class _CompanyPipeline:
                 config.ANALYST_WORKSPACE / "reports" / ctx["report_type"] / ctx["report_year"] / ctx["stock_code"] / ctx["report_stem"]
             )
         ctx["analyst_dir"] = analyst_dir
-        ctx["analyst_report_path"] = art("financial_evidence_draft", "analyst_report_json") or (
+        filing_set_path = art("financial_evidence_draft", "filing_set_json") or (
+            str(Path(analyst_dir) / "filing_set.json") if analyst_dir and ctx.get("filing_policy") == "recent_history" else ""
+        )
+        ctx["filing_set_path"] = filing_set_path
+        ctx["analyst_report_path"] = art("financial_evidence_draft", "analyst_report_json") or filing_set_path or (
             str(Path(analyst_dir) / "analyst_report.json") if analyst_dir else ""
         )
-        # evidence draft 可以跨观察日复用，正式判断必须按知识截止日隔离，防止后来分析覆盖历史结论。
-        formal_dir = Path(analyst_dir) / "as_of" / self.as_of_date if analyst_dir else None
+        # 多期交接包本身已按 as_of_date 隔离；单份模式继续使用旧的 as_of 子目录。
+        if analyst_dir and ctx.get("filing_policy") == "recent_history":
+            formal_dir = Path(analyst_dir)
+        else:
+            formal_dir = Path(analyst_dir) / "as_of" / self.as_of_date if analyst_dir else None
         ctx["formal_dir"] = str(formal_dir) if formal_dir else ""
         ctx["formal_json_path"] = str(formal_dir / "formal_financial_analysis.json") if formal_dir else ""
         ctx["as_of_date"] = self.as_of_date
-        selected_record = layers.get("collector", {}).get("selected_record", {}) or {}
+        selected_record = layers.get("collector", {}).get("selected_record", {}) or primary_filing.get("selected_record", {}) or {}
         ctx["source_report_published_at"] = str(selected_record.get("published_at") or "")
         if ctx["stock_code"]:
             ctx["market_package_dir"] = str(config.MARKET_CONTEXT_WORKSPACE / "packages" / ctx["stock_code"] / self.as_of_date)
@@ -2114,7 +1223,7 @@ class _CompanyPipeline:
                         },
                     )
             else:
-                logger.warning("run %s 状态刷新失败", self.run.run_id)
+                logger.warning("Run %s state refresh failed", self.run.run_id)
 
     def _mark(self, step_id: str, status: str) -> None:
         """记录步骤终态，用于最终 run 状态判定。
@@ -2146,7 +1255,7 @@ class _CompanyPipeline:
         self.run.skip_accepting_steps.discard(step_id)
         if self.run.manual_signals.get(step_id) == "skip":
             self.run.manual_signals.pop(step_id, None)
-            await self._emit("step_skipped", step_id, {"reason": "用户手动跳过"})
+            await self._emit("step_skipped", step_id, {"reason": "Skipped manually by the user"})
             self._mark(step_id, "skipped")
             return True
         return False
@@ -2165,7 +1274,7 @@ class _CompanyPipeline:
         await self._emit("run_started", None, {"mode": run.mode, "params": run.params, "llm_mode": run.llm_mode})
         broken = config.missing_scripts()
         if broken:
-            await self._emit("run_error", None, {"error": "被编排脚本缺失: " + "; ".join(broken)})
+            await self._emit("run_error", None, {"error": "Required orchestration scripts are missing: " + "; ".join(broken)})
             await self._emit("run_completed", None, {"status": "failed"})
             return "failed"
 
@@ -2238,7 +1347,7 @@ class _CompanyPipeline:
                 try:
                     await market_task
                 except (asyncio.CancelledError, Exception):
-                    logger.info("run %s 市场上下文分支随主线中止", run.run_id)
+                    logger.info("Run %s market-context branch stopped with the main line", run.run_id)
             await self._emit("run_completed", None, {"status": "failed"})
             return "failed"
 
@@ -2246,7 +1355,7 @@ class _CompanyPipeline:
             try:
                 await market_task
             except Exception:
-                logger.exception("run %s 市场上下文分支异常", run.run_id)
+                logger.exception("Run %s market-context branch failed", run.run_id)
                 self._mark("market_context_update", "failed")
 
         await self._step_valuation_gate(plan_map)
@@ -2315,7 +1424,7 @@ class _CompanyPipeline:
             params, process_registry=self.run.procs
         )
         if code != 0 or state is None:
-            await self._emit("step_failed", step_id, {"error": f"audit 执行失败: {tail[-500:]}", "exit_code": code})
+            await self._emit("step_failed", step_id, {"error": f"Audit execution failed: {tail[-500:]}", "exit_code": code})
             self._mark(step_id, "failed")
             return None
         self.state = state
@@ -2326,10 +1435,10 @@ class _CompanyPipeline:
         await self._emit(
             "step_log",
             step_id,
-            {"line": "层状态: " + ", ".join(f"{name}={status}" for name, status in layer_statuses.items())},
+            {"line": "Layer status: " + ", ".join(f"{name}={status}" for name, status in layer_statuses.items())},
         )
         await self._artifact(step_id, state_path)
-        await self._emit("step_completed", step_id, {"summary": "研究状态盘点完成", "artifacts": [str(state_path)]})
+        await self._emit("step_completed", step_id, {"summary": "Research-state audit completed", "artifacts": [str(state_path)]})
         self._mark(step_id, "completed")
         if step_id == "final_audit":
             refresh_payload: dict[str, Any] = {
@@ -2337,14 +1446,6 @@ class _CompanyPipeline:
                 "reusable": state.get("reusable", {}),
                 "next_actions": state.get("next_actions", []),
             }
-            if self.run.execution_mode == "coordinator_cli" and self.run.plan:
-                refresh_payload["milestone_states"] = _build_milestone_states(
-                    state,
-                    self.run.plan,
-                    run_market_context=self.run_market_context,
-                    # 终局只陈述最终正式产物是否就绪；不再保留运行前旧签名限制。
-                    force_refresh=False,
-                )
             await self._emit("state_refreshed", None, refresh_payload)
         return state
 
@@ -2413,34 +1514,78 @@ class _CompanyPipeline:
             步骤终态。
         """
         step_id = "collector_fetch"
-        stock_code = self.ctx.get("stock_code") or ""
-        report_year = self.ctx.get("report_year") or ""
-        report_type = self.ctx.get("report_type") or "annual"
-        if not stock_code or not report_year:
+        stock_code = str(self.ctx.get("stock_code") or "")
+        filing_policy = str(self.ctx.get("filing_policy") or "")
+        if not stock_code:
             await self._emit("step_started", step_id, {})
+            await self._emit("step_failed", step_id, {"error": "stock_code is missing, so filing collection cannot start."})
+            self._mark(step_id, "failed")
+            return "failed"
+
+        if filing_policy == "recent_history":
+            command_items = steps.build_recent_collector_cmds(
+                stock_code,
+                self.as_of_date,
+                annual_lookback=int(self.run.params.get("annual_lookback") or 2),
+            )
+            total = len(command_items)
+            for index, item in enumerate(command_items, start=1):
+                await self._emit(
+                    "step_log",
+                    step_id,
+                    {"line": f"Collecting {item['report_type']} fiscal year {item['report_year']} within {item['disclosure_start']}..{item['disclosure_end']}"},
+                )
+                code, tail = await self._run_script(step_id, item["cmd"])
+                if code != 0:
+                    await self._emit(
+                        "step_failed",
+                        step_id,
+                        {
+                            "error": _tail_text(tail),
+                            "exit_code": code,
+                            "report_type": item["report_type"],
+                            "report_year": item["report_year"],
+                        },
+                    )
+                    self._mark(step_id, "failed")
+                    return "failed"
+                await self._emit("step_progress", step_id, {"done": index, "total": total, "unit": "filing windows"})
+        else:
+            report_year = str(self.ctx.get("report_year") or "")
+            report_type = str(self.ctx.get("report_type") or "annual")
+            if not report_year:
+                await self._emit("step_started", step_id, {})
+                await self._emit(
+                    "step_failed",
+                    step_id,
+                    {"error": "report_year is missing, so the single-filing disclosure window cannot be derived."},
+                )
+                self._mark(step_id, "failed")
+                return "failed"
+            cmd = steps.build_collector_cmd(stock_code, report_type, report_year, cutoff=self.as_of_date)
+            code, tail = await self._run_script(step_id, cmd)
+            if code != 0:
+                await self._emit("step_failed", step_id, {"error": _tail_text(tail), "exit_code": code})
+                self._mark(step_id, "failed")
+                return "failed"
+
+        await self._refresh_state()
+        filings = self.state.get("filings") if isinstance(self.state.get("filings"), list) else []
+        for filing in filings:
+            for key in ("main_pdf", "summary_pdf"):
+                info = ((filing.get("collector") or {}).get("artifacts") or {}).get(key) or {}
+                path = str(info.get("path") or "") if isinstance(info, dict) else ""
+                if path and Path(path).exists():
+                    await self._artifact(step_id, path)
+        if str((self.state.get("layers", {}).get("collector") or {}).get("status") or "") != "ready":
             await self._emit(
                 "step_failed",
                 step_id,
-                {"error": "缺少 stock_code 或 report_year，无法推导披露窗口；请在参数中明确目标。"},
+                {"error": "Collection finished, but one or more required cutoff-eligible filings are still missing."},
             )
             self._mark(step_id, "failed")
             return "failed"
-        cmd = steps.build_collector_cmd(stock_code, report_type, report_year)
-        code, tail = await self._run_script(step_id, cmd)
-        if code != 0:
-            await self._emit("step_failed", step_id, {"error": _tail_text(tail), "exit_code": code})
-            self._mark(step_id, "failed")
-            return "failed"
-        await self._refresh_state()
-        for key in ("main_pdf", "summary_pdf"):
-            path = self.ctx.get(key) or ""
-            if path and Path(path).exists():
-                await self._artifact(step_id, path)
-        if not (self.ctx.get("main_pdf") and Path(self.ctx["main_pdf"]).exists()):
-            await self._emit("step_failed", step_id, {"error": "采集完成但未找到正式财报 PDF，请检查披露窗口或目标代码。"})
-            self._mark(step_id, "failed")
-            return "failed"
-        await self._emit("step_completed", step_id, {"summary": "财报 PDF 已就位"})
+        await self._emit("step_completed", step_id, {"summary": f"{len(filings)} required financial filings are ready"})
         self._mark(step_id, "completed")
         return "completed"
 
@@ -2453,28 +1598,77 @@ class _CompanyPipeline:
             步骤终态。
         """
         step_id = "processor_parse"
-        content_before_path = self.ctx.get("content_json") or ""
+        filings = self.state.get("filings") if isinstance(self.state.get("filings"), list) else []
+        if str(self.ctx.get("filing_policy") or "") == "recent_history":
+            pending = []
+            for filing in filings:
+                artifacts = (filing.get("processor") or {}).get("artifacts") or {}
+                content_info = artifacts.get("content_json") or {}
+                if self.force_refresh or not bool(content_info.get("exists")):
+                    pending.append(filing)
+            total = len(pending)
+            for index, filing in enumerate(pending, start=1):
+                record = filing.get("selected_record") or {}
+                main_pdf_info = (((filing.get("collector") or {}).get("artifacts") or {}).get("main_pdf") or {})
+                announcement_id = str(record.get("announcement_id") or "")
+                cmd = steps.build_processor_parse_cmd(
+                    str(self.ctx.get("stock_code") or ""),
+                    str(filing.get("report_type") or "annual"),
+                    str(filing.get("report_year") or ""),
+                    overwrite=self.force_refresh,
+                    announcement_id=announcement_id,
+                    pdf_path=str(main_pdf_info.get("path") or "") if not announcement_id else "",
+                )
+                code, tail = await self._run_script(step_id, cmd)
+                if code != 0:
+                    await self._emit(
+                        "step_failed",
+                        step_id,
+                        {"error": _tail_text(tail), "exit_code": code, "filing_id": filing.get("filing_id")},
+                    )
+                    self._mark(step_id, "failed")
+                    return "failed"
+                await self._emit("step_progress", step_id, {"done": index, "total": total, "unit": "filings"})
+            await self._refresh_state()
+            refreshed = self.state.get("filings") if isinstance(self.state.get("filings"), list) else []
+            missing = []
+            for filing in refreshed:
+                info = (((filing.get("processor") or {}).get("artifacts") or {}).get("content_json") or {})
+                path = str(info.get("path") or "")
+                if not info.get("exists"):
+                    missing.append(f"{filing.get('report_type')} {filing.get('report_year')}")
+                elif path:
+                    await self._artifact(step_id, path)
+            if missing:
+                await self._emit("step_failed", step_id, {"error": "Parsing did not produce content.json for: " + ", ".join(missing)})
+                self._mark(step_id, "failed")
+                return "failed"
+            await self._emit("step_completed", step_id, {"summary": f"PDF parsing is ready for {len(refreshed)} filings"})
+            self._mark(step_id, "completed")
+            return "completed"
+
+        content_before_path = str(self.ctx.get("content_json") or "")
         content_before = _artifact_signature(content_before_path) if content_before_path else None
         cmd = steps.build_processor_parse_cmd(
-            self.ctx.get("stock_code", ""),
-            self.ctx.get("report_type", "annual"),
-            self.ctx.get("report_year", ""),
+            str(self.ctx.get("stock_code") or ""),
+            str(self.ctx.get("report_type") or "annual"),
+            str(self.ctx.get("report_year") or ""),
             overwrite=self.force_refresh,
         )
         code, tail = await self._run_script(step_id, cmd)
         await self._refresh_state()
-        content_json = self.ctx.get("content_json") or ""
+        content_json = str(self.ctx.get("content_json") or "")
         content_after = _artifact_signature(content_json) if content_json else None
         stale_force_refresh = self.force_refresh and content_after == content_before
         if code != 0 or content_after is None or stale_force_refresh:
             error = _tail_text(tail) if code != 0 else (
-                "force_refresh 后 content.json 未发生变化" if stale_force_refresh else "解析结束但未找到 content.json"
+                "content.json did not change after force_refresh" if stale_force_refresh else "Parsing finished but content.json was not found"
             )
             await self._emit("step_failed", step_id, {"error": error, "exit_code": code})
             self._mark(step_id, "failed")
             return "failed"
         await self._artifact(step_id, content_json)
-        await self._emit("step_completed", step_id, {"summary": "PDF 解析完成"})
+        await self._emit("step_completed", step_id, {"summary": "PDF parsing completed"})
         self._mark(step_id, "completed")
         return "completed"
 
@@ -2507,10 +1701,12 @@ class _CompanyPipeline:
             步骤终态。
         """
         step_id = "processor_digest"
+        if str(self.ctx.get("filing_policy") or "") == "recent_history":
+            return await self._step_digest_recent()
         content_json = self.ctx.get("content_json") or ""
         if not content_json or not Path(content_json).exists():
             await self._emit("step_started", step_id, {})
-            await self._emit("step_failed", step_id, {"error": "缺少 content.json，无法构建 digest。"})
+            await self._emit("step_failed", step_id, {"error": "content.json is missing; the digest cannot be built."})
             self._mark(step_id, "failed")
             return "failed"
         pipeline_dir = self.ctx.get("pipeline_dir") or str(Path(content_json).parent / "digest_pipeline")
@@ -2549,7 +1745,7 @@ class _CompanyPipeline:
         llm_digest = report_dir / "llm_digest.json"
         if code != 0 and (self.force_refresh or not llm_digest.exists()):
             # 缺 chunk 时 merge 抛 RuntimeError；降级为 --allow-partial 产出不完整 digest。
-            await self._emit("step_log", step_id, {"line": "merge 失败，尝试 --allow-partial 生成不完整 digest"})
+            await self._emit("step_log", step_id, {"line": "Merge failed; attempting --allow-partial to generate an incomplete digest"})
             code, tail = await _stream_subprocess(
                 self.run, step_id, owner, steps.build_digest_merge_cmd(pipeline_dir, allow_partial=True)
             )
@@ -2560,7 +1756,7 @@ class _CompanyPipeline:
         )
         if code != 0 or digest_after is None or audit_after is None or stale_force_refresh:
             error = _tail_text(tail) if code != 0 else (
-                "force_refresh 后 digest 产物未全部刷新" if stale_force_refresh else "digest 产物不完整"
+                "Not all digest artifacts were refreshed after force_refresh" if stale_force_refresh else "Digest artifacts are incomplete"
             )
             await self._emit("step_failed", step_id, {"error": error, "exit_code": code})
             self._mark(step_id, "failed")
@@ -2580,13 +1776,87 @@ class _CompanyPipeline:
                 "digest_incomplete",
                 step_id,
                 steps.INFO_PROCESSOR,
-                "digest_audit.complete=false：存在缺失或无效 chunk，建议信息处理员修复 digest；"
-                "本次流水线继续，财务证据草稿将以 --allow-incomplete-digest 运行。",
+                "digest_audit.complete=false: chunks are missing or invalid. The information processor should repair the digest; "
+                "the workflow will continue and the financial evidence draft will run with --allow-incomplete-digest.",
             )
-        payload: dict[str, Any] = {"summary": "LLM Digest 构建完成"}
+        payload: dict[str, Any] = {"summary": "LLM digest completed"}
         if degraded:
             payload["degraded"] = True
         await self._emit("step_completed", step_id, payload)
+        self._mark(step_id, "degraded" if degraded else "completed")
+        return "completed"
+
+    async def _step_digest_recent(self) -> str:
+        """为近期财报集合逐份构建 digest，并保留成功期间的结果。"""
+        step_id = "processor_digest"
+        filings = self.state.get("filings") if isinstance(self.state.get("filings"), list) else []
+        pending: list[tuple[dict[str, Any], str]] = []
+        for filing in filings:
+            artifacts = (filing.get("processor") or {}).get("artifacts") or {}
+            content = artifacts.get("content_json") or {}
+            digest = artifacts.get("llm_digest_json") or {}
+            audit_info = artifacts.get("digest_audit_json") or {}
+            if not content.get("exists"):
+                await self._emit("step_failed", step_id, {"error": f"content.json is missing for {filing.get('filing_id')}"})
+                self._mark(step_id, "failed")
+                return "failed"
+            if self.force_refresh or not digest.get("exists") or not audit_info.get("exists"):
+                pending.append((filing, str(content.get("path") or "")))
+
+        owner = steps.COMPANY_STEP_MAP[step_id].owner
+        total = len(pending)
+        for index, (filing, content_json) in enumerate(pending, start=1):
+            report_dir = Path(content_json).parent
+            pipeline_dir = report_dir / "digest_pipeline"
+            prepare_cmd = steps.build_digest_prepare_cmd(content_json, overwrite=self.force_refresh)
+            code, tail = await self._run_script(step_id, prepare_cmd)
+            if code != 0 and (self.force_refresh or not (pipeline_dir / "chunk_manifest.json").exists()):
+                await self._emit("step_failed", step_id, {"error": _tail_text(tail), "filing_id": filing.get("filing_id")})
+                self._mark(step_id, "failed")
+                return "failed"
+            auto_cmd = steps.build_digest_auto_cmd(str(pipeline_dir), overwrite=self.force_refresh)
+            code, tail = await _stream_subprocess(self.run, step_id, owner, auto_cmd)
+            if code != 0:
+                await self._emit("step_failed", step_id, {"error": _tail_text(tail), "filing_id": filing.get("filing_id")})
+                self._mark(step_id, "failed")
+                return "failed"
+            code, tail = await _stream_subprocess(
+                self.run,
+                step_id,
+                owner,
+                steps.build_digest_merge_cmd(str(pipeline_dir)),
+            )
+            if code != 0 and not (report_dir / "llm_digest.json").exists():
+                code, tail = await _stream_subprocess(
+                    self.run,
+                    step_id,
+                    owner,
+                    steps.build_digest_merge_cmd(str(pipeline_dir), allow_partial=True),
+                )
+            if code != 0 or not (report_dir / "llm_digest.json").exists() or not (report_dir / "digest_audit.json").exists():
+                await self._emit("step_failed", step_id, {"error": _tail_text(tail), "filing_id": filing.get("filing_id")})
+                self._mark(step_id, "failed")
+                return "failed"
+            digest_audit = state_reader.load_json_dict(report_dir / "digest_audit.json")
+            if digest_audit.get("complete") is False:
+                self.allow_incomplete_digest = True
+            await self._artifact(step_id, report_dir / "llm_digest.json")
+            await self._artifact(step_id, report_dir / "digest_audit.json")
+            await self._emit("step_progress", step_id, {"done": index, "total": total, "unit": "filings"})
+
+        await self._refresh_state()
+        refreshed = self.state.get("filings") if isinstance(self.state.get("filings"), list) else []
+        missing = []
+        for filing in refreshed:
+            artifacts = (filing.get("processor") or {}).get("artifacts") or {}
+            if not (artifacts.get("llm_digest_json") or {}).get("exists") or not (artifacts.get("digest_audit_json") or {}).get("exists"):
+                missing.append(f"{filing.get('report_type')} {filing.get('report_year')}")
+        if missing:
+            await self._emit("step_failed", step_id, {"error": "Digest artifacts remain missing for: " + ", ".join(missing)})
+            self._mark(step_id, "failed")
+            return "failed"
+        degraded = self.allow_incomplete_digest
+        await self._emit("step_completed", step_id, {"summary": f"LLM digest is ready for {len(refreshed)} filings", "degraded": degraded})
         self._mark(step_id, "degraded" if degraded else "completed")
         return "completed"
 
@@ -2599,10 +1869,12 @@ class _CompanyPipeline:
             步骤终态。
         """
         step_id = "processor_rag"
+        if str(self.ctx.get("filing_policy") or "") == "recent_history":
+            return await self._step_rag_recent()
         content_json = self.ctx.get("content_json") or ""
         if not content_json or not Path(content_json).exists():
             await self._emit("step_started", step_id, {})
-            await self._emit("step_failed", step_id, {"error": "缺少 content.json，无法构建 RAG 索引。"})
+            await self._emit("step_failed", step_id, {"error": "content.json is missing; the RAG index cannot be built."})
             self._mark(step_id, "failed")
             return "failed"
         rag_dir = Path(content_json).parent / "rag_index"
@@ -2619,7 +1891,7 @@ class _CompanyPipeline:
         )
         if code != 0 or chunks_after is None or meta_after is None or stale_force_refresh:
             error = _tail_text(tail) if code != 0 else (
-                "force_refresh 后 RAG 产物未全部刷新" if stale_force_refresh else "RAG 索引产物不完整"
+                "Not all RAG artifacts were refreshed after force_refresh" if stale_force_refresh else "RAG index artifacts are incomplete"
             )
             await self._emit("step_failed", step_id, {"error": error, "exit_code": code})
             self._mark(step_id, "failed")
@@ -2627,7 +1899,49 @@ class _CompanyPipeline:
         await self._refresh_state()
         await self._artifact(step_id, chunks)
         await self._artifact(step_id, meta)
-        await self._emit("step_completed", step_id, {"summary": "RAG 索引就绪"})
+        await self._emit("step_completed", step_id, {"summary": "RAG index is ready"})
+        self._mark(step_id, "completed")
+        return "completed"
+
+    async def _step_rag_recent(self) -> str:
+        """为近期财报集合逐份构建文档隔离的 RAG 索引。"""
+        step_id = "processor_rag"
+        filings = self.state.get("filings") if isinstance(self.state.get("filings"), list) else []
+        pending: list[tuple[dict[str, Any], str]] = []
+        for filing in filings:
+            artifacts = (filing.get("processor") or {}).get("artifacts") or {}
+            content = artifacts.get("content_json") or {}
+            rag = artifacts.get("rag_chunks_jsonl") or {}
+            if not content.get("exists"):
+                await self._emit("step_failed", step_id, {"error": f"content.json is missing for {filing.get('filing_id')}"})
+                self._mark(step_id, "failed")
+                return "failed"
+            if self.force_refresh or not rag.get("exists"):
+                pending.append((filing, str(content.get("path") or "")))
+        total = len(pending)
+        for index, (filing, content_json) in enumerate(pending, start=1):
+            cmd = steps.build_rag_cmd(content_json, overwrite=self.force_refresh)
+            code, tail = await self._run_script(step_id, cmd)
+            rag_dir = Path(content_json).parent / "rag_index"
+            if code != 0 or not (rag_dir / "rag_chunks.jsonl").exists():
+                await self._emit("step_failed", step_id, {"error": _tail_text(tail), "filing_id": filing.get("filing_id")})
+                self._mark(step_id, "failed")
+                return "failed"
+            await self._artifact(step_id, rag_dir / "rag_chunks.jsonl")
+            if (rag_dir / "rag_index_meta.json").exists():
+                await self._artifact(step_id, rag_dir / "rag_index_meta.json")
+            await self._emit("step_progress", step_id, {"done": index, "total": total, "unit": "filings"})
+        await self._refresh_state()
+        missing = []
+        for filing in self.state.get("filings") or []:
+            rag = (((filing.get("processor") or {}).get("artifacts") or {}).get("rag_chunks_jsonl") or {})
+            if not rag.get("exists"):
+                missing.append(f"{filing.get('report_type')} {filing.get('report_year')}")
+        if missing:
+            await self._emit("step_failed", step_id, {"error": "RAG indexes remain missing for: " + ", ".join(missing)})
+            self._mark(step_id, "failed")
+            return "failed"
+        await self._emit("step_completed", step_id, {"summary": f"RAG indexes are ready for {len(self.state.get('filings') or [])} filings"})
         self._mark(step_id, "completed")
         return "completed"
 
@@ -2640,11 +1954,13 @@ class _CompanyPipeline:
             步骤终态（本步骤永不返回 failed）。
         """
         step_id = "processor_compare"
+        if str(self.ctx.get("filing_policy") or "") == "recent_history":
+            return await self._step_compare_recent()
         content_json = self.ctx.get("content_json") or ""
         comparison = Path(content_json).parent / "summary_comparison.json" if content_json else None
         if not content_json or not Path(content_json).exists():
             await self._emit("step_started", step_id, {})
-            await self._emit("step_completed", step_id, {"summary": "缺少 content.json，摘要比对降级跳过", "degraded": True})
+            await self._emit("step_completed", step_id, {"summary": "content.json is missing; summary comparison was skipped with limitations", "degraded": True})
             self._mark(step_id, "degraded")
             return "completed"
         cmd = steps.build_compare_cmd(content_json)
@@ -2652,7 +1968,7 @@ class _CompanyPipeline:
         await self._refresh_state()
         if comparison and comparison.exists():
             await self._artifact(step_id, comparison)
-            payload: dict[str, Any] = {"summary": "摘要交叉比对完成"}
+            payload: dict[str, Any] = {"summary": "Summary cross-check completed"}
             if code != 0:
                 payload["degraded"] = True
             await self._emit("step_completed", step_id, payload)
@@ -2662,9 +1978,46 @@ class _CompanyPipeline:
         await self._emit(
             "step_completed",
             step_id,
-            {"summary": f"摘要比对失败已降级（{_tail_text(tail, limit=200)}）", "degraded": True},
+            {"summary": f"Summary comparison failed and was downgraded ({_tail_text(tail, limit=200)})", "degraded": True},
         )
         self._mark(step_id, "degraded")
+        return "completed"
+
+    async def _step_compare_recent(self) -> str:
+        """只对存在正式摘要的年报执行摘要比对，中报明确记为不适用。"""
+        step_id = "processor_compare"
+        filings = self.state.get("filings") if isinstance(self.state.get("filings"), list) else []
+        pending: list[tuple[dict[str, Any], str]] = []
+        for filing in filings:
+            if filing.get("summary_comparison") != "required":
+                continue
+            artifacts = (filing.get("processor") or {}).get("artifacts") or {}
+            content = artifacts.get("content_json") or {}
+            comparison = artifacts.get("summary_comparison_json") or {}
+            if self.force_refresh or not comparison.get("exists"):
+                pending.append((filing, str(content.get("path") or "")))
+        total = len(pending)
+        degraded = False
+        for index, (filing, content_json) in enumerate(pending, start=1):
+            if not content_json or not Path(content_json).exists():
+                degraded = True
+                continue
+            cmd = steps.build_compare_cmd(content_json)
+            code, tail = await self._run_script(step_id, cmd)
+            comparison = Path(content_json).parent / "summary_comparison.json"
+            if code != 0 or not comparison.exists():
+                degraded = True
+                await self._emit("step_log", step_id, {"line": f"Summary comparison was unavailable for {filing.get('filing_id')}: {_tail_text(tail, limit=200)}"})
+            else:
+                await self._artifact(step_id, comparison)
+            await self._emit("step_progress", step_id, {"done": index, "total": total, "unit": "annual filings"})
+        await self._refresh_state()
+        await self._emit(
+            "step_completed",
+            step_id,
+            {"summary": f"Summary comparison applicability was checked for {len(filings)} filings", "degraded": degraded},
+        )
+        self._mark(step_id, "degraded" if degraded else "completed")
         return "completed"
 
     async def _step_draft(self) -> str:
@@ -2676,10 +2029,33 @@ class _CompanyPipeline:
             步骤终态。
         """
         step_id = "financial_evidence_draft"
+        if str(self.ctx.get("filing_policy") or "") == "recent_history":
+            research_state_path = str(self.ctx.get("research_state_path") or "")
+            if not research_state_path or not Path(research_state_path).exists():
+                await self._emit("step_started", step_id, {})
+                await self._emit("step_failed", step_id, {"error": "research_state.json is missing; the filing-set handoff cannot be generated."})
+                self._mark(step_id, "failed")
+                return "failed"
+            code, tail = await self._run_script(step_id, steps.build_filing_set_cmd(research_state_path))
+            if code != 0:
+                await self._emit("step_failed", step_id, {"error": _tail_text(tail), "exit_code": code})
+                self._mark(step_id, "failed")
+                return "failed"
+            await self._refresh_state()
+            filing_set_path = str(self.ctx.get("filing_set_path") or "")
+            if not filing_set_path or not Path(filing_set_path).exists():
+                await self._emit("step_failed", step_id, {"error": "filing_set.json was not found after generation."})
+                self._mark(step_id, "failed")
+                return "failed"
+            await self._artifact(step_id, filing_set_path)
+            await self._emit("step_completed", step_id, {"summary": f"Multi-period filing-set handoff generated for {len(self.state.get('filings') or [])} filings"})
+            self._mark(step_id, "completed")
+            return "completed"
+
         report_dir = self.ctx.get("report_dir") or ""
         if not report_dir or not Path(report_dir).exists():
             await self._emit("step_started", step_id, {})
-            await self._emit("step_failed", step_id, {"error": "缺少信息处理员报告目录，无法生成财务证据草稿。"})
+            await self._emit("step_failed", step_id, {"error": "The information-processor report directory is missing; the financial evidence draft cannot be generated."})
             self._mark(step_id, "failed")
             return "failed"
         digest_audit = state_reader.load_json_dict(Path(self.ctx.get("digest_audit_path") or ""))
@@ -2688,7 +2064,7 @@ class _CompanyPipeline:
         code, tail = await self._run_script(step_id, cmd)
         if code != 0 and not allow_incomplete:
             # digest 不完整会让脚本直接抛 RuntimeError；补宽容开关重试一次。
-            await self._emit("step_log", step_id, {"line": "草稿失败，尝试 --allow-incomplete-digest 重试"})
+            await self._emit("step_log", step_id, {"line": "Draft generation failed; retrying with --allow-incomplete-digest"})
             cmd = steps.build_financial_cmd(report_dir, self.depth, self.focus, True)
             code, tail = await self._run_script(step_id, cmd)
         if code != 0:
@@ -2711,7 +2087,7 @@ class _CompanyPipeline:
                 "evidence_low",
                 step_id,
                 steps.INFO_PROCESSOR,
-                f"证据核验通过率 {verified:.0f}/{checked:.0f} 低于 60%，建议信息处理员补证后重跑草稿。",
+                f"Evidence verification passed {verified:.0f}/{checked:.0f}, below 60%. The information processor should add evidence and rerun the draft.",
             )
         audit_info = state_reader.load_json_dict(analyst_dir / "analyst_audit.json")
         blocking = int(audit_info.get("upstream_requests_blocking") or 0)
@@ -2720,9 +2096,9 @@ class _CompanyPipeline:
                 "draft_blocking",
                 step_id,
                 steps.INFO_PROCESSOR,
-                f"财务证据草稿存在 {blocking} 条阻塞性补证请求，建议信息处理员优先处理。",
+                f"The financial evidence draft contains {blocking} blocking evidence requests. The information processor should handle them first.",
             )
-        await self._emit("step_completed", step_id, {"summary": "财务证据草稿完成"})
+        await self._emit("step_completed", step_id, {"summary": "Financial evidence draft completed"})
         self._mark(step_id, "completed")
         return "completed"
 
@@ -2783,12 +2159,12 @@ class _CompanyPipeline:
                 count = len(list(queries_dir.glob("*"))) if queries_dir.exists() else 0
                 done = max(0, count - baseline)
                 # 查询数只是近似进度：新增数可能超过估计值，此时抬高分母避免超过 100%。
-                return min(done, max(estimate, done)), max(estimate, done), "queries", "近似进度（查询缓存计数）"
+                return min(done, max(estimate, done)), max(estimate, done), "queries", "Approximate progress based on cached query count"
 
             code, tail = await self._run_script(step_id, cmd, progress_fn=progress)
             if dry_run:
                 await self._emit(
-                    "step_log", step_id, {"line": "未检测到 Bocha API key，已按 --dry-run 生成查询计划（降级）"}
+                    "step_log", step_id, {"line": "Bocha API key was not detected; generated a query plan with --dry-run (limited delivery)"}
                 )
             if code != 0:
                 await self._emit("step_failed", step_id, {"error": _tail_text(tail), "exit_code": code})
@@ -2814,7 +2190,7 @@ class _CompanyPipeline:
                 or quality_gate.get("can_support_market_expectation_proxy") is not True
                 or usage_boundary.get("data_type") != "public_web_search_proxy"
             )
-            payload: dict[str, Any] = {"summary": f"市场上下文包状态: {package.get('status') or 'unknown'}"}
+            payload: dict[str, Any] = {"summary": f"Market-context package status: {package.get('status') or 'unknown'}"}
             if degraded:
                 payload["degraded"] = True
             await self._emit("step_completed", step_id, payload)
@@ -2823,7 +2199,7 @@ class _CompanyPipeline:
         except asyncio.CancelledError:
             raise
         except Exception as exc:
-            logger.exception("run %s 市场上下文步骤异常", self.run.run_id)
+            logger.exception("Run %s market-context step failed", self.run.run_id)
             await self._emit("step_failed", step_id, {"error": str(exc)})
             self._mark(step_id, "failed")
             return "failed"
@@ -2848,7 +2224,7 @@ class _CompanyPipeline:
         formal_status = self.run.step_status.get("formal_financial_analysis", "skipped_plan")
         if formal_status not in {"completed", "skipped_plan"}:
             await self._emit(
-                "step_skipped", step_id, {"reason": f"上游正式财务分析状态为 {formal_status}，估值缺输入被跳过"}
+                "step_skipped", step_id, {"reason": f"Upstream formal financial analysis status is {formal_status}; valuation was skipped because required inputs are missing"}
             )
             self._mark(step_id, "skipped")
             return
@@ -2894,7 +2270,7 @@ class _CompanyPipeline:
                     "valuation_upstream",
                     "valuation_update",
                     ", ".join(owners) or steps.FINANCIAL_ANALYST,
-                    f"估值分析员产出补数请求 upstream_request.json（{path}），需上游补证后继续。",
+                    f"The valuation analyst produced upstream_request.json ({path}); upstream evidence is required before continuing.",
                 )
                 return
 
@@ -2984,29 +2360,29 @@ class _CompanyPipeline:
             claude_path = _resolve_claude_executable()
             if not claude_path:
                 await self.bus.publish(
-                    run.run_id, "step_log", step_id, owner, {"line": "未找到 claude CLI，回退为手动等待模式"}
+                    run.run_id, "step_log", step_id, owner, {"line": "Claude CLI not found; falling back to manual waiting mode"}
                 )
             else:
                 cmd = [claude_path, "-p", pack["prompt"], "--permission-mode", "acceptEdits"]
                 await self.bus.publish(
-                    run.run_id, "step_log", step_id, owner, {"line": "启动 claude CLI 执行 LLM 步骤……"}
+                    run.run_id, "step_log", step_id, owner, {"line": "Starting Claude CLI for the LLM step…"}
                 )
                 # 剥离 CLAUDE* 环境变量，避免嵌套 Claude Code 会话互相干扰。
                 code, _tail = await _stream_subprocess(
                     run, step_id, owner, cmd, strip_claude_env=True, timeout=config.LLM_WAIT_TIMEOUT_SECONDS
                 )
                 await self.bus.publish(
-                    run.run_id, "step_log", step_id, owner, {"line": f"claude CLI 退出，exit_code={code}，复查期望产物"}
+                    run.run_id, "step_log", step_id, owner, {"line": f"Claude CLI exited with code {code}; rechecking expected artifacts"}
                 )
                 if _complete_group(groups, baseline):
-                    return await finalize("claude CLI 产物齐备，步骤完成")
+                    return await finalize("Claude CLI artifacts are complete; step completed")
 
         await self.bus.publish(run.run_id, "step_waiting_llm", step_id, owner, waiting_payload)
         deadline = asyncio.get_running_loop().time() + config.LLM_WAIT_TIMEOUT_SECONDS
         while True:
             signal = run.manual_signals.pop(step_id, None)
             if signal == "skip":
-                await self.bus.publish(run.run_id, "step_skipped", step_id, owner, {"reason": "用户手动跳过"})
+                await self.bus.publish(run.run_id, "step_skipped", step_id, owner, {"reason": "Skipped manually by the user"})
                 self._mark(step_id, "skipped")
                 run.llm_artifact_groups.pop(step_id, None)
                 run.llm_artifact_baselines.pop(step_id, None)
@@ -3018,7 +2394,7 @@ class _CompanyPipeline:
                     "step_completed",
                     step_id,
                     owner,
-                    {"summary": "用户强制标记完成（期望产物未齐，交付降级）", "degraded": True},
+                    {"summary": "User forced completion while expected artifacts were incomplete; delivery downgraded", "degraded": True},
                 )
                 # 依赖状态仍记 completed，以便用户强制放行估值；同时单独登记
                 # degraded，确保最终 run 诚实汇总为 partial。
@@ -3029,12 +2405,12 @@ class _CompanyPipeline:
                 run.skip_accepting_steps.discard(step_id)
                 return "completed"
             if signal == "complete" or _complete_group(groups, baseline):
-                return await finalize("期望产物已落盘，步骤自动完成")
+                return await finalize("Expected artifacts were written; step completed automatically")
             if on_poll is not None:
                 await on_poll()
             if asyncio.get_running_loop().time() > deadline:
                 await self.bus.publish(
-                    run.run_id, "step_failed", step_id, owner, {"error": "等待 LLM 产物超时，可手动完成或跳过后重试"}
+                    run.run_id, "step_failed", step_id, owner, {"error": "Timed out waiting for LLM artifacts. Complete manually or skip and retry."}
                 )
                 self._mark(step_id, "failed")
                 run.llm_artifact_groups.pop(step_id, None)
@@ -3086,7 +2462,7 @@ class _CompanyPipeline:
             state_reader.load_json_dict(formal_json) if formal_json else {},
             state_reader.load_json_dict(market_json) if market_json else {},
         )
-        await self._emit("step_completed", step_id, {"summary": "结论卡已生成"})
+        await self._emit("step_completed", step_id, {"summary": "Conclusion card generated"})
         self._mark(step_id, "completed")
         return summary
 
@@ -3146,393 +2522,177 @@ def _artifact_step_for_layer(layer: str, key: str) -> str | None:
         "market_context": "market_context_update",
     }.get(layer)
 
+class _PythonAgentCoordinatorPipeline(_CompanyPipeline):
+    """Python 主会话公司研究流水线：精确 agent I/O，事件实时进入控制台 SSE。
 
-def _milestone_artifact_paths(state: dict[str, Any] | None) -> dict[str, list[str]]:
-    """按冻结 step_id 汇总 research_state 中已存在的正式产物路径。"""
-    grouped: dict[str, list[str]] = {}
-    for layer, key, path in _state_artifacts(state):
-        step_id = _artifact_step_for_layer(layer, key)
-        if step_id:
-            grouped.setdefault(step_id, []).append(path)
-    return {step_id: sorted(set(paths)) for step_id, paths in grouped.items()}
-
-
-def _milestone_baseline_signatures(state: dict[str, Any] | None) -> dict[str, dict[str, tuple[int, int] | None]]:
-    """记录初始正式产物签名，供 force_refresh 判断本轮是否真的刷新。"""
-    return {
-        step_id: {path: _artifact_signature(path) for path in paths}
-        for step_id, paths in _milestone_artifact_paths(state).items()
-    }
-
-
-def _build_milestone_states(
-    state: dict[str, Any] | None,
-    initial_plan: list[dict[str, Any]],
-    *,
-    run_market_context: bool,
-    force_refresh: bool = False,
-    baseline_signatures: dict[str, dict[str, tuple[int, int] | None]] | None = None,
-) -> dict[str, dict[str, Any]]:
-    """把最新 audit 投影为交付里程碑，而不伪造真实 Agent 执行顺序。"""
-    state = state or {}
-    layers = state.get("layers") if isinstance(state.get("layers"), dict) else {}
-    current_plan = {
-        item["step_id"]: item
-        for item in steps.build_company_plan(
-            state,
-            force_refresh=False,
-            llm_mode="coordinator_cli",
-            run_market_context=run_market_context,
-        )
-    }
-    artifact_paths = _milestone_artifact_paths(state)
-    baseline_signatures = baseline_signatures or {}
-    projected: dict[str, dict[str, Any]] = {}
-
-    for item in initial_plan:
-        step_id = str(item.get("step_id") or "")
-        layer_name = str(item.get("layer") or "")
-        if not step_id or not layer_name:
-            continue
-        layer = layers.get(layer_name) if isinstance(layers.get(layer_name), dict) else {}
-        readiness = str(layer.get("status") or "missing")
-        gaps = layer.get("gaps") if isinstance(layer.get("gaps"), list) else []
-        current = current_plan.get(step_id, {})
-
-        if item.get("status") == "skipped":
-            run_status = "skipped"
-        elif readiness in {"blocked", "failed"}:
-            run_status = "failed"
-        elif current.get("status") == "skipped":
-            if not force_refresh:
-                run_status = "completed"
-            else:
-                current_signatures = {path: _artifact_signature(path) for path in artifact_paths.get(step_id, [])}
-                baseline = baseline_signatures.get(step_id, {})
-                changed = bool(current_signatures) and any(
-                    path not in baseline or signature != baseline.get(path)
-                    for path, signature in current_signatures.items()
-                )
-                run_status = "completed" if changed else "pending"
-        else:
-            run_status = "pending"
-
-        projected[step_id] = {
-            "step_id": step_id,
-            "owner": str(item.get("owner") or ""),
-            "title": str(item.get("title") or step_id),
-            "layer": layer_name,
-            "readiness_status": readiness,
-            "run_status": run_status,
-            "source": "workspace_audit",
-            "artifact_paths": artifact_paths.get(step_id, []),
-            "summary": "；".join(str(gap) for gap in gaps[:2]),
-        }
-    return projected
-
-
-class CompanyStateObserver:
-    """coordinator_cli 运行期间的 research_state 与新产物观察器。
-
-    观察器只负责周期性执行 audit、比较投影并发布事件；它绝不根据状态启动、
-    跳过或重试 Agent，从而保持 /rec 主会话是唯一真实协调者。
-
-    参数：
-        run: 所属控制台运行，用于事件发布和 audit 进程生命周期登记。
-        audit_params: 只读 audit 请求参数。
-        initial_state: 初始 research_state，用于状态与产物去重基线。
-        interval: 轮询间隔秒数；缺省使用配置值。
-        on_state: 每次成功 audit 后同步接收最新状态的轻量回调。
-    返回值：
-        实例；``run_loop`` 持续运行直到 ``stop`` 或任务取消。
+    调度权在 Python（``company_research_coordinator.run_company_research``）；
+    每一步脚本/agent 的输入输出路径、校验结果通过 EventBus 推送；
+    不启动 Claude Code 主会话 /rec。
     """
 
-    def __init__(
-        self,
-        run: Run,
-        audit_params: dict[str, Any],
-        initial_state: dict[str, Any],
-        *,
-        initial_plan: list[dict[str, Any]] | None = None,
-        run_market_context: bool = True,
-        force_refresh: bool = False,
-        interval: float | None = None,
-        on_state: Callable[[dict[str, Any]], None] | None = None,
-    ):
-        self.run = run
-        self.audit_params = dict(audit_params)
-        self.initial_plan = list(initial_plan or run.plan or [])
-        self.run_market_context = bool(run_market_context)
-        self.force_refresh = bool(force_refresh)
-        self.baseline_signatures = _milestone_baseline_signatures(initial_state)
-        self.interval = (
-            config.COORDINATOR_AUDIT_POLL_INTERVAL_SECONDS if interval is None else max(0.01, float(interval))
-        )
-        self.on_state = on_state
-        self.current_state = initial_state
-        self.last_signature = self._signature(initial_state)
-        self.seen_artifacts = {
-            path: _artifact_signature(path) for _, _, path in _state_artifacts(initial_state)
-        }
-        self.stop_event = asyncio.Event()
-        self.audit_failures = 0
-
-    def _projection(self, state: dict[str, Any]) -> dict[str, Any]:
-        """构造含交付里程碑的 coordinator 状态快照。"""
-        return {
-            **_state_projection(state),
-            "milestone_states": _build_milestone_states(
-                state,
-                self.initial_plan,
-                run_market_context=self.run_market_context,
-                force_refresh=self.force_refresh,
-                baseline_signatures=self.baseline_signatures,
-            ),
-        }
-
-    def _signature(self, state: dict[str, Any]) -> str:
-        """对 coordinator 快照生成稳定签名，忽略 generated_at 等无业务变化字段。"""
-        return json.dumps(self._projection(state), ensure_ascii=False, sort_keys=True, default=str)
-
-    async def poll_once(self) -> bool:
-        """执行一轮 audit；有语义状态变化时返回 True。"""
-        state, code, tail = await state_reader.run_audit(
-            self.audit_params,
-            write_state=False,
-            process_registry=self.run.procs,
-        )
-        if code != 0 or state is None:
-            self.audit_failures += 1
-            # 连续失败时按 1、5、20… 次稀疏提示，避免故障期间每轮刷屏。
-            if self.audit_failures in {1, 5, 20}:
-                await self.run.bus.publish(
-                    self.run.run_id,
-                    "coordinator_message",
-                    owner=_COORDINATOR_OWNER,
-                    payload={
-                        "text": f"状态观察 audit 暂时失败（第 {self.audit_failures} 次）: {tail[-300:]}",
-                        "partial": False,
-                        "warning": True,
-                    },
-                )
-            return False
-        self.audit_failures = 0
-        self.current_state = state
-        if self.on_state is not None:
-            self.on_state(state)
-
-        projection = self._projection(state)
-        signature = json.dumps(projection, ensure_ascii=False, sort_keys=True, default=str)
-        changed = signature != self.last_signature
-        if changed:
-            self.last_signature = signature
-            await self.run.bus.publish(
-                self.run.run_id,
-                "state_refreshed",
-                payload=projection,
-            )
-
-        for layer, key, path in _state_artifacts(state):
-            signature = _artifact_signature(path)
-            if path in self.seen_artifacts and self.seen_artifacts[path] == signature:
-                continue
-            self.seen_artifacts[path] = signature
-            step_id = _artifact_step_for_layer(layer, key)
-            step_def = steps.COMPANY_STEP_MAP.get(step_id) if step_id else None
-            await self.run.bus.publish(
-                self.run.run_id,
-                "artifact_created",
-                step_id=step_id,
-                owner=step_def.owner if step_def else _COORDINATOR_OWNER,
-                payload={
-                    "path": path,
-                    "name": Path(path).name,
-                    "kind": _kind_of(path),
-                    "producer_owner": step_def.owner if step_def else _COORDINATOR_OWNER,
-                    "delivery_to": _COORDINATOR_OWNER,
-                    "source": "workspace_audit",
-                },
-            )
-        return changed
-
-    async def run_loop(self) -> None:
-        """持续轮询直到 stop()；停止信号可立即打断等待。"""
-        while not self.stop_event.is_set():
-            try:
-                await asyncio.wait_for(self.stop_event.wait(), timeout=self.interval)
-            except asyncio.TimeoutError:
-                await self.poll_once()
-
-    def stop(self) -> None:
-        """幂等请求停止观察器。"""
-        self.stop_event.set()
-
-
-class _CompanyCoordinatorPipeline(_CompanyPipeline):
-    """单个完整 /rec Claude Code 主会话驱动的公司研究执行器。"""
-
-    def _accept_observed_state(self, state: dict[str, Any]) -> None:
-        """接收观察器最新状态并刷新 deliver 所需路径缓存。"""
-        self.state = state
-        self._refresh_ctx()
-
-    @staticmethod
-    def _has_usable_delivery(state: dict[str, Any] | None, summary: dict[str, Any]) -> bool:
-        """判断失败场景下是否仍有正式财务/估值产物可形成部分交付。"""
-        layers = (state or {}).get("layers") if isinstance(state, dict) else {}
-        statuses = {
-            name: str(layer.get("status") or "")
-            for name, layer in (layers.items() if isinstance(layers, dict) else [])
-            if isinstance(layer, dict)
-        }
-        fair_value = summary.get("fair_value") if isinstance(summary.get("fair_value"), dict) else {}
-        return bool(
-            statuses.get("formal_financial_analysis") == "ready"
-            or statuses.get("valuation") == "ready"
-            or summary.get("one_line_conclusion")
-            or any(fair_value.get(name) is not None for name in ("bear", "base", "bull"))
-        )
-
-    def _coordinator_status(
-        self,
-        outcome: CoordinatorProcessOutcome,
-        final_state: dict[str, Any] | None,
-        summary: dict[str, Any],
-    ) -> tuple[str, list[str]]:
-        """综合 CLI 结果、permission denial 与终局层状态计算忠实交付状态。"""
-        issues: list[str] = []
-        result = outcome.result if isinstance(outcome.result, dict) else {}
-        if outcome.exit_code != 0:
-            issues.append(f"claude CLI exit_code={outcome.exit_code}")
-        if final_state is None:
-            issues.append("final audit 不可用，使用最后一次可用状态交付")
-        if not result:
-            issues.append("未收到 Claude Code 顶层 result 事件")
-        if result.get("is_error"):
-            issues.append(str(result.get("result") or result.get("terminal_reason") or "Claude Code result.is_error=true"))
-        denials = result.get("permission_denials")
-        if isinstance(denials, list) and denials:
-            issues.append(f"存在 {len(denials)} 项 permission denial")
-
-        projection = _state_projection(final_state or self.state)
-        statuses = projection.get("layer_statuses") if isinstance(projection.get("layer_statuses"), dict) else {}
-        required_layers = [
-            "collector",
-            "processor",
-            "financial_evidence_draft",
-            "formal_financial_analysis",
-            "valuation",
-        ]
-        if self.run_market_context:
-            required_layers.append("market_context")
-        missing_ready = [layer for layer in required_layers if statuses.get(layer) != "ready"]
-        if missing_ready:
-            issues.append("关键层未 ready: " + ", ".join(missing_ready))
-
-        usable = self._has_usable_delivery(final_state or self.state, summary)
-        if (final_state is None or outcome.exit_code != 0 or result.get("is_error")) and not usable:
-            return "failed", issues
-        return ("partial" if issues else "completed"), issues
-
     async def execute(self) -> str:
-        """执行阶段一 coordinator_cli 路径，不进入 legacy main_line/_dispatch。"""
+        """执行 Python agent 协调器路径并冻结结论卡。"""
         run = self.run
-        run.execution_mode = "coordinator_cli"
+        run.execution_mode = "python_agent_coordinator"
         run.persist_meta()
         await self._emit(
             "run_started",
             None,
-            {"mode": run.mode, "params": run.params, "llm_mode": run.llm_mode, "execution_mode": run.execution_mode},
+            {
+                "mode": run.mode,
+                "params": run.params,
+                "llm_mode": run.llm_mode,
+                "execution_mode": run.execution_mode,
+            },
         )
         if not config.AUDIT_SCRIPT.exists():
-            error = f"被编排脚本缺失: audit: {config.AUDIT_SCRIPT}"
+            error = f"Required orchestration scripts are missing: audit: {config.AUDIT_SCRIPT}"
             await self._emit("run_error", None, {"error": error})
             await self._emit("run_completed", None, {"status": "failed"})
             return "failed"
 
-        initial_state = await self._step_audit("audit", force_refresh=self.force_refresh)
-        if initial_state is None:
-            await self._emit("run_completed", None, {"status": "failed"})
-            return "failed"
-
-        plan = steps.build_company_plan(
-            initial_state,
-            force_refresh=self.force_refresh,
-            llm_mode=run.llm_mode,
-            run_market_context=self.run_market_context,
-        )
-        run.plan = plan
-        for item in plan:
-            if item["status"] == "skipped":
-                self._mark(item["step_id"], "skipped_plan")
-        baseline_signatures = _milestone_baseline_signatures(initial_state)
-        projection = {
-            **_state_projection(initial_state),
-            "milestone_states": _build_milestone_states(
-                initial_state,
-                plan,
-                run_market_context=self.run_market_context,
-                force_refresh=self.force_refresh,
-                baseline_signatures=baseline_signatures,
-            ),
-        }
-        await self._emit(
-            "plan_ready",
-            None,
-            {
-                "steps": plan,
-                "research_state_path": str(state_reader.state_file_path(initial_state)),
-                **projection,
-                "display_only": True,
-                "trace_mode": "runtime",
-            },
-        )
-
-        observer = CompanyStateObserver(
-            run,
-            self._audit_params(force_refresh=False),
-            initial_state,
-            initial_plan=plan,
-            run_market_context=self.run_market_context,
-            force_refresh=self.force_refresh,
-            on_state=self._accept_observed_state,
-        )
-        observer_task = asyncio.create_task(observer.run_loop(), name=f"{run.run_id}:state-observer")
-        prompt = steps.build_company_coordinator_prompt(run.params, run.run_id)
         await self._emit(
             "coordinator_message",
             None,
-            {"text": "启动单个完整 /rec Claude Code 主协调会话", "partial": False},
+            {
+                "text": (
+                    "Starting Python-owned agent coordinator "
+                    "(explicit plan + registered agents with validated I/O)"
+                ),
+                "partial": False,
+            },
         )
-        try:
-            outcome = await _stream_claude_coordinator(run, prompt)
-        finally:
-            observer.stop()
-            # stop_event 只能打断 sleep，无法中止正在执行的 audit；显式取消任务才能
-            # 触发 run_audit 的进程树清理并让 coordinator 取消及时收束。
-            if not observer_task.done():
-                observer_task.cancel()
-            await asyncio.gather(observer_task, return_exceptions=True)
 
-        final_state = await self._step_audit("final_audit")
-        if final_state is None:
-            # final audit 失败时保留观察器最后一份可用状态，便于生成诚实的低置信结论卡。
-            self.state = observer.current_state or self.state
+        # 协调器诊断目录落在本次 console run 下，不污染正式研究工作区。
+        coord_workspace = run.run_dir / "python_agent_coordinator"
+        coord_workspace.mkdir(parents=True, exist_ok=True)
+
+        loop = asyncio.get_running_loop()
+        # 线程 → 主循环：把同步协调器事件桥接到 async EventBus。
+        pending_bridge: list[asyncio.Future[Any]] = []
+
+        def event_sink(event: dict[str, Any]) -> None:
+            """同步回调：把协调器事件调度到 EventBus（线程安全）。"""
+            event_type = str(event.get("type") or "")
+            if not event_type:
+                return
+            step_id = event.get("step_id")
+            owner = event.get("owner")
+            payload = event.get("payload") if isinstance(event.get("payload"), dict) else {}
+
+            async def _publish() -> None:
+                # plan 同步到 run，便于前端路线图与 meta 恢复。
+                if event_type == "plan_ready":
+                    steps_payload = payload.get("steps")
+                    if isinstance(steps_payload, list):
+                        run.plan = steps_payload
+                        for item in steps_payload:
+                            if isinstance(item, dict) and item.get("status") == "skipped":
+                                self._mark(str(item.get("step_id") or ""), "skipped_plan")
+                if event_type in {"step_completed", "step_failed", "step_skipped"} and step_id:
+                    status_map = {
+                        "step_completed": "completed",
+                        "step_failed": "failed",
+                        "step_skipped": "skipped",
+                    }
+                    if payload.get("degraded"):
+                        self._mark(str(step_id), "degraded")
+                    else:
+                        self._mark(str(step_id), status_map.get(event_type, "completed"))
+                await self.bus.publish(
+                    run.run_id,
+                    event_type,
+                    str(step_id) if step_id else None,
+                    str(owner) if owner else None,
+                    payload,
+                )
+
+            fut = asyncio.run_coroutine_threadsafe(_publish(), loop)
+            pending_bridge.append(fut)
+
+        try:
+            from research_console import company_research_coordinator as coord_mod
+        except Exception as exc:  # noqa: BLE001
+            await self._emit("run_error", None, {"error": f"Failed to import python coordinator: {exc}"})
+            await self._emit("run_completed", None, {"status": "failed"})
+            return "failed"
+
+        # Claude 可执行文件：params 覆盖 > 配置 > 本机 native 安装路径 > PATH。
+        candidate_bins = [
+            str(run.params.get("claude_bin") or "").strip(),
+            str(getattr(config, "CLAUDE_BIN", "") or "").strip(),
+            str(Path.home() / ".local" / "bin" / "claude.exe"),
+            "claude",
+        ]
+        claude_bin = next((item for item in candidate_bins if item), "claude")
+
+        def _run_sync():
+            return coord_mod.run_company_research(
+                dict(run.params),
+                workspace=coord_workspace,
+                claude_bin=claude_bin,
+                tool_restriction="permission",
+                llm_timeout_seconds=int(run.params.get("llm_timeout_seconds") or 1800),
+                max_budget_usd=float(run.params.get("max_budget_usd") or 5.0),
+                run_scripts=run.params.get("run_scripts", True) is not False,
+                run_llm_agents=run.params.get("run_llm_agents", True) is not False,
+                auto_fallback_tool_mode=True,
+                event_sink=event_sink,
+            )
+
+        try:
+            coord_result = await asyncio.to_thread(_run_sync)
+        except Exception as exc:  # noqa: BLE001
+            logger.exception("python_agent_coordinator failed")
+            await self._emit("run_error", None, {"error": str(exc)})
+            await self._emit("run_completed", None, {"status": "failed"})
+            return "failed"
+        finally:
+            # 等待桥接事件全部落盘，避免 run_completed 抢在 step 事件之前。
+            if pending_bridge:
+                await asyncio.gather(
+                    *[asyncio.wrap_future(item) for item in pending_bridge],
+                    return_exceptions=True,
+                )
+
+        # 把协调器最终 research_state 灌回 pipeline 上下文，供 deliver 抽结论卡。
+        if isinstance(coord_result.research_state, dict):
+            self.state = coord_result.research_state
             self._refresh_ctx()
+            self._mark("final_audit", "completed")
+        if coord_result.research_state_path:
+            await self._artifact("final_audit", coord_result.research_state_path)
+        report_path = coord_workspace / "company_research_report.json"
+        if report_path.exists():
+            await self._artifact("deliver", str(report_path))
+
         summary = await self._step_deliver()
-        status, issues = self._coordinator_status(outcome, final_state, summary)
+        status = str(coord_result.final_status or "failed")
+        if status == "reused":
+            # 控制台终态枚举用 completed/partial/failed；全复用视为 completed。
+            status = "completed"
+        if status not in {"completed", "partial", "failed", "cancelled"}:
+            status = "partial" if coord_result.passed else "failed"
+        if coord_result.errors and status == "completed":
+            status = "partial"
         summary, frozen_status = await _freeze_company_decision_before_terminal(run, summary, status)
-        if frozen_status != status:
-            issues.append("历史决策快照冻结失败，终态已降级为 partial")
         status = frozen_status
-        if issues:
+        if coord_result.errors:
             await self._emit(
                 "coordinator_message",
                 None,
-                {"text": "协调会话完成，但存在交付限定：" + "；".join(issues), "partial": False, "warning": True},
+                {
+                    "text": "Python coordinator finished with issues: " + "; ".join(coord_result.errors),
+                    "partial": False,
+                    "warning": True,
+                },
             )
         if status == "failed":
-            await self._emit("run_error", None, {"error": "；".join(issues) or "协调会话未形成可用交付"})
+            await self._emit(
+                "run_error",
+                None,
+                {"error": "; ".join(coord_result.errors) or "Python agent coordinator failed"},
+            )
         await self.bus.publish(
             run.run_id,
             "handoff",
@@ -3543,8 +2703,9 @@ class _CompanyCoordinatorPipeline(_CompanyPipeline):
                 "to_owner": _COORDINATOR_OWNER,
                 "from_station": "dispatch",
                 "to_station": "deliver",
-                "label": "结论前置完整报告",
+                "label": "Complete Conclusion-First Report",
                 "status": status,
+                "execution_mode": "python_agent_coordinator",
             },
         )
         await self._emit("run_completed", None, {"status": status, "summary": summary})
@@ -3600,7 +2761,7 @@ async def _freeze_company_decision_before_terminal(
         )
         return decision, status
     except Exception as exc:  # noqa: BLE001 - 冻结故障必须转为可交付降级，不能击穿终态
-        warning = f"历史决策快照冻结失败: {exc}"
+        warning = f"Historical decision snapshot freezing failed: {exc}"
         gaps = decision.get("gaps") if isinstance(decision.get("gaps"), list) else []
         if warning not in gaps:
             decision["gaps"] = [*gaps, warning]
@@ -3623,17 +2784,18 @@ def _tail_text(tail: list[str], limit: int = 600) -> str:
         末尾若干行拼接的文本。
     """
     text = " | ".join(line for line in tail[-8:] if line.strip())
-    return text[-limit:] if text else "无输出"
+    return text[-limit:] if text else "No output"
 
 
 async def _company_pipeline(run: Run) -> str:
     """公司流水线入口。
 
-    coordinator_cli 由单个完整 /rec 会话驱动；其他模式继续走原静态 DAG，
-    从而保留 manual / 分步 claude_cli / skip 的全部 legacy 行为。
+    - python_agent_coordinator：Python 主会话按 plan 调度脚本与注册表 agent（默认）；
+    - 其他模式继续走原静态 DAG（manual / 分步 claude_cli / skip）。
+    Claude Code 主会话 /rec（coordinator_cli）已移除。
     """
-    if run.llm_mode == "coordinator_cli":
-        return await _CompanyCoordinatorPipeline(run).execute()
+    if run.llm_mode == "python_agent_coordinator":
+        return await _PythonAgentCoordinatorPipeline(run).execute()
     return await _CompanyPipeline(run).execute()
 
 
@@ -3683,7 +2845,7 @@ class _IndustryPipeline:
         await self._emit("run_started", None, {"mode": run.mode, "params": run.params, "llm_mode": run.llm_mode})
         broken = config.missing_scripts()
         if broken:
-            await self._emit("run_error", None, {"error": "被编排脚本缺失: " + "; ".join(broken)})
+            await self._emit("run_error", None, {"error": "Required orchestration scripts are missing: " + "; ".join(broken)})
             await self._emit("run_completed", None, {"status": "failed"})
             return "failed"
         plan = steps.build_industry_plan(run.llm_mode)
@@ -3735,14 +2897,14 @@ class _IndustryPipeline:
             return False
         self._locate_package(since=started_at)
         if not self.package_json:
-            await self._emit("step_failed", step_id, {"error": "收集完成但未找到 industry_input_package.json"})
+            await self._emit("step_failed", step_id, {"error": "Collection completed but industry_input_package.json was not found"})
             self.run.failed_steps.append(step_id)
             return False
         for name in [self.package_json.name, self.package_json.stem + ".md", "evidence_table.json"]:
             path = self.package_dir / name if self.package_dir else None
             if path and path.exists():
                 await self._proxy._artifact(step_id, path)
-        await self._emit("step_completed", step_id, {"summary": f"行业输入包: {self.package_dir}"})
+        await self._emit("step_completed", step_id, {"summary": f"Industry input package: {self.package_dir}"})
         self.run.step_status[step_id] = "completed"
         return True
 
@@ -3794,7 +2956,7 @@ class _IndustryPipeline:
         result = (self.package_dir / "validation_result.json") if self.package_dir else None
         if result and result.exists():
             await self._proxy._artifact(step_id, result)
-            payload: dict[str, Any] = {"summary": "行业包校验完成"}
+            payload: dict[str, Any] = {"summary": "Industry package validation completed"}
             if code != 0:
                 payload["degraded"] = True
             await self._emit("step_completed", step_id, payload)
@@ -3804,7 +2966,7 @@ class _IndustryPipeline:
             await self._emit("step_failed", step_id, {"error": _tail_text(tail), "exit_code": code})
             self.run.failed_steps.append(step_id)
             return
-        await self._emit("step_completed", step_id, {"summary": "校验脚本通过（未产出 validation_result.json）", "degraded": True})
+        await self._emit("step_completed", step_id, {"summary": "Validation script passed without producing validation_result.json", "degraded": True})
         self._proxy._mark(step_id, "degraded")
 
     async def _step_research(self) -> None:
@@ -3863,7 +3025,7 @@ class _IndustryPipeline:
                 "industry_research_view_json": str(view_path or "") if view_path and view_path.exists() else "",
             },
         }
-        await self._emit("step_completed", step_id, {"summary": "行业结论卡已生成"})
+        await self._emit("step_completed", step_id, {"summary": "Industry conclusion card generated"})
         self.run.step_status[step_id] = "completed"
         return summary
 
@@ -3892,7 +3054,7 @@ def _demo_plan() -> list[dict[str, Any]]:
         plan_ready.steps 列表。
     """
     skipped = {
-        "audit": "演示模式使用预置盘点结果",
+        "audit": "Demo mode uses a preset audit result",
         "processor_compare": steps.SKIP_REASON_REUSE,
     }
     plan: list[dict[str, Any]] = []
@@ -3933,8 +3095,8 @@ def build_demo_timeline(run_id: str) -> list[tuple[float, dict[str, Any]]]:
     mw = str(config.MARKET_CONTEXT_WORKSPACE / "packages" / "600519" / "2026-07-13")
     vw = str(config.VALUATION_WORKSPACE / "reports" / "600519" / "2026-07-13")
     demo_prompt = (
-        "请使用 financial-analyst agent 完成正式财务分析（演示提示词），"
-        f"并把 formal_financial_analysis.json 与 formal_financial_analysis.md 写入 {aw}。"
+        "Use the financial-analyst agent to complete the formal financial analysis (demo prompt), "
+        f"and write formal_financial_analysis.json and formal_financial_analysis.md to {aw}."
     )
 
     def artifact(step_id: str, path: str) -> tuple[str, str, dict[str, Any]]:
@@ -3949,26 +3111,26 @@ def build_demo_timeline(run_id: str) -> list[tuple[float, dict[str, Any]]]:
         "market_context": "ready",
     }
     demo_summary = {
-        "company_name": "贵州茅台",
+        "company_name": "Kweichow Moutai",
         "stock_code": "600519",
         "report_year": "2025",
         "valuation_view": "undervalued",
-        "one_line_conclusion": "演示数据：现价处于基准合理区间下方，呈温和低估，基准情景隐含约 +8.9% 上行空间。",
+        "one_line_conclusion": "Demo data: the current price is below the base fair-value point, indicating modest undervaluation with approximately 8.9% upside in the base case.",
         "current_price": 1488.0,
         "market_cap": 1869200000000.0,
         "price_source": "demo_fixture",
-        "fair_value": {"bear": 1350.0, "base": 1620.0, "bull": 1850.0, "unit": "元/股"},
+        "fair_value": {"bear": 1350.0, "base": 1620.0, "bull": 1850.0, "unit": "CNY/share"},
         "upside_downside": {"bear": -0.093, "base": 0.089, "bull": 0.243},
         "key_assumptions": [
-            "演示：2026 年营收增速 9%-11%",
-            "演示：直销占比稳步提升，毛利率维持 91% 以上",
-            "演示：分红率不低于 75%",
-            "演示：批价企稳，渠道库存健康",
+            "Demo: 2026 revenue growth of 9%-11%",
+            "Demo: direct-sales mix continues to rise while gross margin remains above 91%",
+            "Demo: dividend payout ratio remains at or above 75%",
+            "Demo: wholesale pricing stabilizes and channel inventory remains healthy",
         ],
         "valuation_falsifiers": [
-            "演示：批价连续两个季度下行超 10%",
-            "演示：直销渠道收入增速转负",
-            "演示：分红率下调至 60% 以下",
+            "Demo: wholesale pricing declines by more than 10% for two consecutive quarters",
+            "Demo: direct-sales revenue growth turns negative",
+            "Demo: dividend payout ratio falls below 60%",
         ],
         "market_context": {
             "status": "ready_public_proxy",
@@ -3983,14 +3145,14 @@ def build_demo_timeline(run_id: str) -> list[tuple[float, dict[str, Any]]]:
             "market_context_package_md": f"{mw}\\market_context_package.md",
         },
         "confidence": "medium",
-        "gaps": ["演示数据，非真实研究结论"],
+        "gaps": ["Demo data, not a real research conclusion"],
     }
 
     # (延迟, 事件类型, step_id, payload)；owner 由步骤定义补齐。
     script: list[tuple[float, str, str | None, dict[str, Any]]] = [
         (0.0, "run_started", None, {
             "mode": "demo",
-            "params": {"stock_code": "600519", "company_name": "贵州茅台", "report_year": "2025", "report_type": "annual"},
+            "params": {"stock_code": "600519", "company_name": "Kweichow Moutai", "report_year": "2025", "report_type": "annual"},
             "llm_mode": "manual",
         }),
         (0.6, "plan_ready", None, {
@@ -4000,82 +3162,82 @@ def build_demo_timeline(run_id: str) -> list[tuple[float, dict[str, Any]]]:
                 "formal_financial_analysis": "missing", "valuation": "missing", "market_context": "missing",
             },
             "reusable": {key: False for key in layer_all_ready},
-            "next_actions": [{"step": "collector_fetch", "owner": "information-collector", "reason": "演示：财报 PDF 待补下载。"}],
+            "next_actions": [{"step": "collector_fetch", "owner": "information-collector", "reason": "Demo: financial-report PDF still needs to be downloaded."}],
         }),
         (0.8, "step_started", "collector_fetch", {"cmd": "python info_collector_scripts/run_cninfo_collection.py --start-date 2026-01-01 --end-date 2026-07-13 --report-types annual --keyword 600519 --download"}),
-        (1.2, "step_log", "collector_fetch", {"line": "查询披露窗口 2026-01-01 ~ 2026-07-13，命中 4 条记录"}),
-        (1.4, "step_log", "collector_fetch", {"line": "下载 600519-贵州茅台-2025年年报.pdf (3.2 MB) …… 完成"}),
-        (1.4, "step_log", "collector_fetch", {"line": "下载 600519-贵州茅台-2025年年报-摘要.pdf (0.4 MB) …… 完成"}),
+        (1.2, "step_log", "collector_fetch", {"line": "Queried disclosure window 2026-01-01 to 2026-07-13 and found 4 records"}),
+        (1.4, "step_log", "collector_fetch", {"line": "Downloaded 600519-Kweichow-Moutai-2025-Annual-Report.pdf (3.2 MB)"}),
+        (1.4, "step_log", "collector_fetch", {"line": "Downloaded 600519-Kweichow-Moutai-2025-Annual-Report-Summary.pdf (0.4 MB)"}),
         (1.0, *artifact("collector_fetch", f"{cw}\\600519-贵州茅台-2025年年报.pdf")),
-        (0.8, "step_completed", "collector_fetch", {"summary": "财报 PDF 已就位"}),
+        (0.8, "step_completed", "collector_fetch", {"summary": "Financial-report PDF is ready"}),
         (0.4, "state_refreshed", None, {"layer_statuses": {**layer_all_ready, "processor": "partial", "financial_evidence_draft": "missing", "formal_financial_analysis": "missing", "valuation": "missing", "market_context": "missing"}, "reusable": {"collector": True}}),
-        (0.6, "step_started", "market_context_update", {"cmd": "python market_context_collector_scripts/run_market_context_collection.py --target 600519 --stock-code 600519 --company-name 贵州茅台 --as-of-date 2026-07-13 --depth standard --freshness oneMonth"}),
+        (0.6, "step_started", "market_context_update", {"cmd": "python market_context_collector_scripts/run_market_context_collection.py --target 600519 --stock-code 600519 --company-name Kweichow-Moutai --as-of-date 2026-07-13 --depth standard --freshness oneMonth"}),
         (0.8, "step_started", "processor_parse", {"cmd": "python info_processor_scripts/run_pdf_processing.py --stock-code 600519 --report-type annual --report-year 2025"}),
-        (1.4, "step_log", "processor_parse", {"line": "解析 266 页 PDF，抽取文本、表格与图片摘要"}),
-        (1.2, "step_progress", "market_context_update", {"done": 2, "total": 12, "unit": "queries", "detail": "近似进度（查询缓存计数）"}),
+        (1.4, "step_log", "processor_parse", {"line": "Parsed a 266-page PDF and extracted text, tables, and image summaries"}),
+        (1.2, "step_progress", "market_context_update", {"done": 2, "total": 12, "unit": "queries", "detail": "Approximate progress based on cached query count"}),
         (1.6, *artifact("processor_parse", f"{pw}\\content.json")),
-        (0.5, "step_completed", "processor_parse", {"summary": "PDF 解析完成"}),
+        (0.5, "step_completed", "processor_parse", {"summary": "PDF parsing completed"}),
         (0.4, "state_refreshed", None, {"layer_statuses": {**layer_all_ready, "processor": "partial", "financial_evidence_draft": "missing", "formal_financial_analysis": "missing", "valuation": "missing", "market_context": "missing"}, "reusable": {"collector": True}}),
         (0.8, "step_started", "processor_digest", {"cmd": "python info_processor_scripts/build_llm_digest.py auto-digest --pipeline-dir <digest_pipeline>"}),
         (0.6, "step_progress", "processor_digest", {"done": 0, "total": 25, "unit": "chunks"}),
         (1.6, "step_progress", "processor_digest", {"done": 5, "total": 25, "unit": "chunks"}),
-        (1.4, "step_progress", "market_context_update", {"done": 5, "total": 12, "unit": "queries", "detail": "近似进度（查询缓存计数）"}),
+        (1.4, "step_progress", "market_context_update", {"done": 5, "total": 12, "unit": "queries", "detail": "Approximate progress based on cached query count"}),
         (1.6, "step_progress", "processor_digest", {"done": 12, "total": 25, "unit": "chunks"}),
         (1.8, "step_progress", "processor_digest", {"done": 20, "total": 25, "unit": "chunks"}),
         (1.6, "step_progress", "processor_digest", {"done": 25, "total": 25, "unit": "chunks"}),
         (0.8, *artifact("processor_digest", f"{pw}\\llm_digest.json")),
-        (0.4, "step_completed", "processor_digest", {"summary": "LLM Digest 构建完成"}),
+        (0.4, "step_completed", "processor_digest", {"summary": "LLM digest completed"}),
         (0.4, "state_refreshed", None, {"layer_statuses": {**layer_all_ready, "processor": "partial", "financial_evidence_draft": "missing", "formal_financial_analysis": "missing", "valuation": "missing", "market_context": "missing"}, "reusable": {"collector": True}}),
         (0.7, "step_started", "processor_rag", {"cmd": "python info_processor_scripts/build_report_rag_index.py build --content-json <content.json>"}),
-        (1.4, "step_log", "processor_rag", {"line": "构建 rag_chunks.jsonl，共 812 条切片，完成"}),
+        (1.4, "step_log", "processor_rag", {"line": "Built rag_chunks.jsonl with 812 chunks"}),
         (0.9, *artifact("processor_rag", f"{pw}\\rag_index\\rag_chunks.jsonl")),
-        (0.5, "step_completed", "processor_rag", {"summary": "RAG 索引就绪"}),
+        (0.5, "step_completed", "processor_rag", {"summary": "RAG index is ready"}),
         (0.4, "state_refreshed", None, {"layer_statuses": {**layer_all_ready, "financial_evidence_draft": "missing", "formal_financial_analysis": "missing", "valuation": "missing", "market_context": "missing"}, "reusable": {"collector": True, "processor": True}}),
-        (1.0, "step_progress", "market_context_update", {"done": 9, "total": 12, "unit": "queries", "detail": "近似进度（查询缓存计数）"}),
+        (1.0, "step_progress", "market_context_update", {"done": 9, "total": 12, "unit": "queries", "detail": "Approximate progress based on cached query count"}),
         (0.8, "step_started", "financial_evidence_draft", {"cmd": "python financial_analyst_scripts/run_financial_analysis.py --report-dir <report_dir> --analysis-depth standard"}),
-        (1.6, "step_log", "financial_evidence_draft", {"line": "证据核验 24 项，通过 13 项，生成核验清单"}),
+        (1.6, "step_log", "financial_evidence_draft", {"line": "Verified 24 evidence items; 13 passed; generated the verification checklist"}),
         (0.9, *artifact("financial_evidence_draft", f"{aw}\\analyst_report.json")),
-        (0.5, "step_completed", "financial_evidence_draft", {"summary": "财务证据草稿完成"}),
+        (0.5, "step_completed", "financial_evidence_draft", {"summary": "Financial evidence draft completed"}),
         (0.6, "backflow", "financial_evidence_draft", {
             "from_step": "financial_evidence_draft",
             "to_owner": "information-processor",
-            "reason": "演示：证据核验通过率 13/24 低于 60%，建议信息处理员补证（仅提示，不自动重跑）",
+            "reason": "Demo: evidence verification passed 13/24, below 60%. The information processor should add evidence (notice only; no automatic rerun).",
         }),
         (0.4, "state_refreshed", None, {"layer_statuses": {**layer_all_ready, "formal_financial_analysis": "missing", "valuation": "missing", "market_context": "missing"}, "reusable": {"collector": True, "processor": True, "financial_evidence_draft": True}}),
         (0.8, "step_started", "formal_financial_analysis", {}),
         (0.5, "step_waiting_llm", "formal_financial_analysis", {
-            "instructions": "演示：请在 Claude Code 中执行提示词；产物落盘后本步骤自动完成。",
+            "instructions": "Demo: run the prompt in Claude Code; this step completes automatically after the artifacts are written.",
             "prompt": demo_prompt,
             "expected_artifacts": [f"{aw}\\formal_financial_analysis.json", f"{aw}\\formal_financial_analysis.md"],
             "claude_cmd": steps.format_claude_cmd(demo_prompt),
         }),
-        (2.0, "step_progress", "market_context_update", {"done": 12, "total": 12, "unit": "queries", "detail": "近似进度（查询缓存计数）"}),
+        (2.0, "step_progress", "market_context_update", {"done": 12, "total": 12, "unit": "queries", "detail": "Approximate progress based on cached query count"}),
         (1.0, *artifact("market_context_update", f"{mw}\\market_context_package.json")),
-        (0.5, "step_completed", "market_context_update", {"summary": "市场上下文包状态: ready_public_proxy"}),
+        (0.5, "step_completed", "market_context_update", {"summary": "Market-context package status: ready_public_proxy"}),
         (0.5, "state_refreshed", None, {"layer_statuses": {**layer_all_ready, "formal_financial_analysis": "missing", "valuation": "missing"}, "reusable": {"collector": True, "processor": True, "financial_evidence_draft": True, "market_context": True}}),
         (3.0, *artifact("formal_financial_analysis", f"{aw}\\formal_financial_analysis.json")),
         (0.3, *artifact("formal_financial_analysis", f"{aw}\\formal_financial_analysis.md")),
-        (0.5, "step_completed", "formal_financial_analysis", {"summary": "期望产物已落盘，步骤自动完成"}),
+        (0.5, "step_completed", "formal_financial_analysis", {"summary": "Expected artifacts were written; step completed automatically"}),
         (0.5, "state_refreshed", None, {"layer_statuses": {**layer_all_ready, "valuation": "missing"}, "reusable": {"collector": True, "processor": True, "financial_evidence_draft": True, "formal_financial_analysis": True, "market_context": True}}),
         (0.8, "step_started", "valuation_update", {}),
         (0.5, "step_waiting_llm", "valuation_update", {
-            "instructions": "演示：估值分析员等待 LLM 产物（四件套）。",
-            "prompt": f"请使用 valuation-analyst agent 完成估值更新（演示提示词），把四件套写入 {vw}。",
+            "instructions": "Demo: the valuation analyst is waiting for the four-file LLM artifact package.",
+            "prompt": f"Use the valuation-analyst agent to complete the valuation update (demo prompt) and write the four-file package to {vw}.",
             "expected_artifacts": [f"{vw}\\{name}" for name in _VALUATION_FILES],
-            "claude_cmd": steps.format_claude_cmd("请使用 valuation-analyst agent 完成估值更新（演示提示词）"),
+            "claude_cmd": steps.format_claude_cmd("Use the valuation-analyst agent to complete the valuation update (demo prompt)"),
         }),
         (4.0, *artifact("valuation_update", f"{vw}\\valuation_report.json")),
         (0.3, *artifact("valuation_update", f"{vw}\\valuation_report.md")),
         (0.3, *artifact("valuation_update", f"{vw}\\valuation_evidence_table.json")),
         (0.3, *artifact("valuation_update", f"{vw}\\valuation_audit.json")),
-        (0.6, "step_completed", "valuation_update", {"summary": "期望产物已落盘，步骤自动完成"}),
+        (0.6, "step_completed", "valuation_update", {"summary": "Expected artifacts were written; step completed automatically"}),
         (0.5, "state_refreshed", None, {"layer_statuses": layer_all_ready, "reusable": {key: True for key in layer_all_ready}}),
         (0.8, "step_started", "final_audit", {"cmd": "python research_orchestrator_scripts/audit_company_research_state.py --stock-code 600519 --report-year 2025 --write-state"}),
-        (1.4, "step_log", "final_audit", {"line": "层状态: collector=ready, processor=ready, financial_evidence_draft=ready, formal_financial_analysis=ready, valuation=ready, market_context=ready"}),
-        (0.6, "step_completed", "final_audit", {"summary": "研究状态盘点完成"}),
+        (1.4, "step_log", "final_audit", {"line": "Layer status: collector=ready, processor=ready, financial_evidence_draft=ready, formal_financial_analysis=ready, valuation=ready, market_context=ready"}),
+        (0.6, "step_completed", "final_audit", {"summary": "Research-state audit completed"}),
         (0.4, "state_refreshed", None, {"layer_statuses": layer_all_ready, "reusable": {key: True for key in layer_all_ready}}),
         (0.8, "step_started", "deliver", {}),
-        (1.2, "step_completed", "deliver", {"summary": "结论卡已生成（演示数据）"}),
+        (1.2, "step_completed", "deliver", {"summary": "Conclusion card generated (demo data)"}),
         (0.6, "run_completed", None, {"status": "completed", "summary": demo_summary}),
     ]
 
@@ -4141,8 +3303,8 @@ def build_demo_timeline(run_id: str) -> list[tuple[float, dict[str, Any]]]:
                         {
                             "work_item_id": step_id,
                             "title": step_def.title,
-                            "description": f"演示：完成{step_def.title}",
-                            "active_form": f"正在{step_def.title}",
+                            "description": f"Demo: complete {step_def.title}",
+                            "active_form": f"Running {step_def.title}",
                             "status": "in_progress",
                             "blocked_by": [],
                         },
@@ -4227,7 +3389,7 @@ def build_demo_timeline(run_id: str) -> list[tuple[float, dict[str, Any]]]:
                             "work_item_id": step_id,
                             "status": "completed",
                             "is_error": False,
-                            "summary": f"{step_def.title}完成",
+                            "summary": f"{step_def.title} completed",
                         },
                         owner,
                     ),
@@ -4242,7 +3404,7 @@ def build_demo_timeline(run_id: str) -> list[tuple[float, dict[str, Any]]]:
                             "agent_name": owner,
                             "invocation_id": invocation_id,
                             "work_item_id": step_id,
-                            "summary": f"{step_def.title}完成",
+                            "summary": f"{step_def.title} completed",
                         },
                         owner,
                     ),
@@ -4253,8 +3415,8 @@ def build_demo_timeline(run_id: str) -> list[tuple[float, dict[str, Any]]]:
                         {
                             "work_item_id": step_id,
                             "title": step_def.title,
-                            "description": f"演示：完成{step_def.title}",
-                            "active_form": f"正在{step_def.title}",
+                            "description": f"Demo: complete {step_def.title}",
+                            "active_form": f"Running {step_def.title}",
                             "status": "completed",
                             "blocked_by": [],
                         },
@@ -4277,7 +3439,7 @@ def build_demo_timeline(run_id: str) -> list[tuple[float, dict[str, Any]]]:
                         "to_owner": _COORDINATOR_OWNER,
                         "from_station": "dispatch",
                         "to_station": "deliver",
-                        "label": "结论前置完整报告",
+                        "label": "Complete Conclusion-First Report",
                         "status": payload.get("status"),
                     },
                     _COORDINATOR_OWNER,
@@ -4465,13 +3627,13 @@ def build_replay_events(run_id: str, params: dict[str, Any]) -> tuple[list[dict[
         if step.layer:
             entry["layer"] = step.layer
         if entry["status"] == "skipped":
-            entry["skip_reason"] = "回放：未找到该层产物"
+            entry["skip_reason"] = "Replay: no artifact found for this layer"
         plan.append(entry)
 
     emit("run_started", start_ts, None, {"mode": "replay", "params": params, "llm_mode": "manual"})
     emit("plan_ready", start_ts, None, {"steps": plan, "research_state_path": str(state_file) if state_file.exists() else ""})
     emit("step_started", start_ts, "audit", {})
-    emit("step_completed", start_ts, "audit", {"summary": "回放模式：使用既有产物合成时间轴"})
+    emit("step_completed", start_ts, "audit", {"summary": "Replay mode: synthesized timeline from existing artifacts"})
 
     # 有产物的步骤按"最早产物 mtime"升序排列，与真实产出顺序一致。
     ordered = sorted(
@@ -4482,7 +3644,7 @@ def build_replay_events(run_id: str, params: dict[str, Any]) -> tuple[list[dict[
         if step.step_id in {"audit", "deliver"}:
             continue
         if not step_files.get(step.step_id):
-            emit("step_skipped", start_ts, step.step_id, {"reason": "回放：未找到该层产物"})
+            emit("step_skipped", start_ts, step.step_id, {"reason": "Replay: no artifact found for this layer"})
     for step_id in ordered:
         files = sorted(step_files[step_id], key=lambda path: path.stat().st_mtime)
         emit("step_started", state_reader.mtime_iso(files[0]), step_id, {})
@@ -4497,7 +3659,7 @@ def build_replay_events(run_id: str, params: dict[str, Any]) -> tuple[list[dict[
             "step_completed",
             state_reader.mtime_iso(files[-1]),
             step_id,
-            {"summary": f"回放：{len(files)} 个产物", "artifacts": [str(path) for path in files]},
+            {"summary": f"Replay: {len(files)} artifacts", "artifacts": [str(path) for path in files]},
         )
         if step_id == "valuation_update" and valuation_dir and (valuation_dir / "upstream_request.json").exists():
             upstream = valuation_dir / "upstream_request.json"
@@ -4505,7 +3667,7 @@ def build_replay_events(run_id: str, params: dict[str, Any]) -> tuple[list[dict[
                 "backflow",
                 state_reader.mtime_iso(upstream),
                 "valuation_update",
-                {"from_step": "valuation_update", "to_owner": steps.FINANCIAL_ANALYST, "reason": f"回放：发现补数请求 {upstream}"},
+                {"from_step": "valuation_update", "to_owner": steps.FINANCIAL_ANALYST, "reason": f"Replay: found supplemental-data request {upstream}"},
             )
         if step_id == "final_audit" and state:
             emit(
@@ -4534,7 +3696,7 @@ def build_replay_events(run_id: str, params: dict[str, Any]) -> tuple[list[dict[
     if not summary.get("report_year"):
         summary["report_year"] = report_year
     emit("step_started", end_ts, "deliver", {})
-    emit("step_completed", end_ts, "deliver", {"summary": "回放结论卡已生成"})
+    emit("step_completed", end_ts, "deliver", {"summary": "Replay conclusion card generated"})
     emit("run_completed", end_ts, None, {"status": "completed", "summary": summary})
     return events, "completed"
 

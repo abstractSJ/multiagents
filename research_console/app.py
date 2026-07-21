@@ -56,7 +56,7 @@ async def lifespan(app: FastAPI):
     config.CONSOLE_WORKSPACE.mkdir(parents=True, exist_ok=True)
     config.RUNS_DIR.mkdir(parents=True, exist_ok=True)
     ENGINE.load_persisted_runs()
-    logger.info("research_console 启动，项目根: %s，已恢复 %d 个历史 run", config.PROJECT_ROOT, len(ENGINE.runs))
+    logger.info("research_console started; project root: %s; restored %d historical runs", config.PROJECT_ROOT, len(ENGINE.runs))
     try:
         yield
     finally:
@@ -70,10 +70,10 @@ async def lifespan(app: FastAPI):
                 *(ENGINE.cancel_run(run_id) for run_id in active_run_ids),
                 return_exceptions=True,
             )
-        logger.info("research_console 关闭")
+        logger.info("research_console stopped")
 
 
-app = FastAPI(title="research_console", version="1.0", lifespan=lifespan)
+app = FastAPI(title="Research Console", description="Multi-agent investment research workflow console", version="1.0", lifespan=lifespan)
 
 
 # ---------------------------------------------------------------------------
@@ -87,7 +87,9 @@ class AuditRequest(BaseModel):
     stock_code: str | None = None
     company_name: str | None = None
     report_year: str | int | None = None
-    report_type: str | None = "annual"
+    report_type: str | None = None
+    filing_policy: str | None = None
+    annual_lookback: int = Field(default=2, ge=1, le=5)
     depth: str | None = "standard"
     focus: str | None = ""
     as_of_date: str | None = ""
@@ -115,7 +117,7 @@ class DecisionReviewRequest(BaseModel):
     falsification_status 用于记录当时证伪条件目前是未知、仍成立还是已经触发。
     """
 
-    review_date: str = Field(..., description="回看日期，YYYY-MM-DD")
+    review_date: str = Field(..., description="Review date in YYYY-MM-DD format")
     current_price: float | None = None
     current_price_date: str | None = None
     current_price_source: str | None = Field(default=None, max_length=500)
@@ -168,16 +170,16 @@ def _run_request_error(mode: str, params: dict[str, Any]) -> str | None:
     if mode == "company":
         has_target = any(str(params.get(key) or "").strip() for key in ("target", "stock_code", "company_name"))
         if not has_target:
-            return "company 模式需要 params.target、params.stock_code 或 params.company_name"
+            return "Company mode requires params.target, params.stock_code, or params.company_name"
         as_of_text = str(params.get("as_of_date") or date.today().isoformat()).strip()
         try:
             parsed_as_of = date.fromisoformat(as_of_text)
         except ValueError:
-            return "company 模式 params.as_of_date 必须使用 YYYY-MM-DD 格式"
+            return "Company-mode params.as_of_date must use YYYY-MM-DD format"
         if parsed_as_of.isoformat() != as_of_text:
-            return "company 模式 params.as_of_date 必须使用 YYYY-MM-DD 格式"
+            return "Company-mode params.as_of_date must use YYYY-MM-DD format"
         if parsed_as_of > date.today():
-            return "company 模式 params.as_of_date 不能晚于今天"
+            return "Company-mode params.as_of_date cannot be later than today"
         # 在 API 边界补齐默认值，确保 run meta、协调器提示词和各脚本看到同一个知识截止日。
         params["as_of_date"] = as_of_text
     elif mode == "industry":
@@ -190,11 +192,11 @@ def _run_request_error(mode: str, params: dict[str, Any]) -> str | None:
         has_any_anchor = any(anchor_values)
         has_full_anchor = all(anchor_values)
         if has_any_anchor and not has_full_anchor:
-            return "industry 公司验证模式需要同时提供 stock_code、company_name 和 fiscal_year/report_year"
+            return "Industry company-validation mode requires stock_code, company_name, and fiscal_year/report_year together"
         if not has_industry_target and not has_full_anchor:
-            return "industry 模式需要 params.target/industry_name，或完整的公司验证参数"
+            return "Industry mode requires params.target/industry_name or a complete company-validation parameter set"
     elif mode == "replay" and not str(params.get("stock_code") or "").strip():
-        return "replay 模式需要 params.stock_code"
+        return "Replay mode requires params.stock_code"
     return None
 
 
@@ -285,13 +287,13 @@ async def audit(req: AuditRequest) -> JSONResponse:
     try:
         parsed_as_of = date.fromisoformat(as_of_text)
     except ValueError:
-        return JSONResponse(status_code=400, content={"error": "as_of_date 必须使用 YYYY-MM-DD 格式"})
+        return JSONResponse(status_code=400, content={"error": "as_of_date must use YYYY-MM-DD format"})
     if parsed_as_of.isoformat() != as_of_text or parsed_as_of > date.today():
-        return JSONResponse(status_code=400, content={"error": "as_of_date 必须是今天或更早的 YYYY-MM-DD 日期"})
+        return JSONResponse(status_code=400, content={"error": "as_of_date must be a YYYY-MM-DD date no later than today"})
     params["as_of_date"] = as_of_text
     state, code, tail = await state_reader.run_audit(params, write_state=False)
     if code != 0 or state is None:
-        return JSONResponse(status_code=500, content={"error": "audit 执行失败", "detail": tail[-800:]})
+        return JSONResponse(status_code=500, content={"error": "Audit execution failed", "detail": tail[-800:]})
     state["state_path"] = str(state_reader.state_file_path(state))
     return JSONResponse(content=state)
 
@@ -310,14 +312,17 @@ async def create_run(req: RunRequest) -> JSONResponse:
         {run_id} 或 400 错误。
     """
     if req.mode not in engine.RUN_MODES:
-        return JSONResponse(status_code=400, content={"error": f"未知 mode: {req.mode}"})
+        return JSONResponse(status_code=400, content={"error": f"Unknown mode: {req.mode}"})
     llm_mode = req.llm_mode or (
         config.DEFAULT_COMPANY_LLM_MODE if req.mode == "company" else config.DEFAULT_LLM_MODE
     )
     if llm_mode not in engine.LLM_MODES:
-        return JSONResponse(status_code=400, content={"error": f"未知 llm_mode: {llm_mode}"})
-    if llm_mode == "coordinator_cli" and req.mode != "company":
-        return JSONResponse(status_code=400, content={"error": "coordinator_cli 仅支持 company 模式"})
+        return JSONResponse(status_code=400, content={"error": f"Unknown llm_mode: {llm_mode}"})
+    if llm_mode == "python_agent_coordinator" and req.mode != "company":
+        return JSONResponse(
+            status_code=400,
+            content={"error": "python_agent_coordinator is supported only in company mode"},
+        )
     params = dict(req.params or {})
     request_error = _run_request_error(req.mode, params)
     if request_error:
@@ -330,7 +335,7 @@ async def create_run(req: RunRequest) -> JSONResponse:
         return JSONResponse(
             status_code=409,
             content={
-                "error": "同一公司已有运行中的研究，已拒绝并发写共享正式工作区",
+                "error": "Research for the same company is already running; concurrent writes to the shared production workspace were rejected",
                 "existing_run_id": exc.run_id,
                 "lease_key": exc.lease_key,
             },
@@ -362,7 +367,7 @@ async def get_run(run_id: str) -> JSONResponse:
     """
     run = ENGINE.runs.get(run_id)
     if not run:
-        return JSONResponse(status_code=404, content={"error": "run 不存在"})
+        return JSONResponse(status_code=404, content={"error": "Run not found"})
     return JSONResponse(
         content={
             "run_id": run.run_id,
@@ -387,16 +392,16 @@ def _history_run_or_response(run_id: str) -> tuple[engine.Run | None, JSONRespon
     """统一校验历史决策 API 的 run 存在性、模式与持久化目录。"""
     run = ENGINE.runs.get(run_id)
     if not run:
-        return None, JSONResponse(status_code=404, content={"status": "run_not_found", "error": "run 不存在"})
+        return None, JSONResponse(status_code=404, content={"status": "run_not_found", "error": "Run not found"})
     if run.mode != "company":
         return None, JSONResponse(
             status_code=409,
-            content={"status": "unsupported_run_mode", "error": "仅 company run 支持历史决策回看"},
+            content={"status": "unsupported_run_mode", "error": "Historical decision review is supported only for company runs"},
         )
     if not run.run_dir:
         return None, JSONResponse(
             status_code=409,
-            content={"status": "history_storage_unavailable", "error": "run 没有持久化目录"},
+            content={"status": "history_storage_unavailable", "error": "The run has no persistent directory"},
         )
     return run, None
 
@@ -536,7 +541,7 @@ async def create_review(run_id: str, req: DecisionReviewRequest) -> JSONResponse
             content={"status": "snapshot_corrupt", "error": str(exc)},
         )
     except OSError as exc:
-        logger.warning("物化 decision snapshot 失败: run=%s", run_id, exc_info=True)
+        logger.warning("Failed to materialize decision snapshot: run=%s", run_id, exc_info=True)
         return JSONResponse(
             status_code=500,
             content={"status": "snapshot_write_failed", "error": str(exc)},
@@ -557,7 +562,7 @@ async def create_review(run_id: str, req: DecisionReviewRequest) -> JSONResponse
             content={"status": "invalid_review_request", "error": str(exc)},
         )
     except OSError as exc:
-        logger.warning("保存 decision review 失败: run=%s", run_id, exc_info=True)
+        logger.warning("Failed to save decision review: run=%s", run_id, exc_info=True)
         return JSONResponse(
             status_code=500,
             content={"status": "review_write_failed", "error": str(exc)},
@@ -591,7 +596,7 @@ async def stream_events(run_id: str, request: Request, after: int = Query(0)) ->
     """
     run = ENGINE.runs.get(run_id)
     if not run:
-        return JSONResponse(status_code=404, content={"error": "run 不存在"})
+        return JSONResponse(status_code=404, content={"error": "Run not found"})
 
     async def generator():
         # 先补发历史：以 after 之后的事件为起点。
@@ -642,10 +647,10 @@ async def cancel_run(run_id: str) -> JSONResponse:
         {ok} 或 404/409。
     """
     if run_id not in ENGINE.runs:
-        return JSONResponse(status_code=404, content={"error": "run 不存在"})
+        return JSONResponse(status_code=404, content={"error": "Run not found"})
     ok = await ENGINE.cancel_run(run_id)
     if not ok:
-        return JSONResponse(status_code=409, content={"ok": False, "error": "run 未在运行中"})
+        return JSONResponse(status_code=409, content={"ok": False, "error": "The run is not active"})
     return JSONResponse(content={"ok": True})
 
 
@@ -661,7 +666,7 @@ async def complete_step(run_id: str, step_id: str, req: StepCompleteRequest | No
         {ok} 或 404/409（含缺失产物清单）。
     """
     if run_id not in ENGINE.runs:
-        return JSONResponse(status_code=404, content={"error": "run 不存在"})
+        return JSONResponse(status_code=404, content={"error": "Run not found"})
     force = bool(req.force) if req else False
     ok, missing = ENGINE.manual_complete(run_id, step_id, force)
     if not ok:
@@ -680,10 +685,10 @@ async def skip_step(run_id: str, step_id: str) -> JSONResponse:
         {ok} 或 404/409。
     """
     if run_id not in ENGINE.runs:
-        return JSONResponse(status_code=404, content={"error": "run 不存在"})
+        return JSONResponse(status_code=404, content={"error": "Run not found"})
     ok = ENGINE.manual_skip(run_id, step_id)
     if not ok:
-        return JSONResponse(status_code=409, content={"ok": False, "error": "步骤不可跳过或已结束"})
+        return JSONResponse(status_code=409, content={"ok": False, "error": "The step cannot be skipped or has already ended"})
     return JSONResponse(content={"ok": True})
 
 
@@ -707,8 +712,8 @@ async def get_artifact(path: str = Query(...)) -> JSONResponse:
     except FileNotFoundError as exc:
         return JSONResponse(status_code=404, content={"error": str(exc)})
     except Exception as exc:  # noqa: BLE001 - 兜底：读取异常统一转 500，避免服务崩溃
-        logger.warning("读取 artifact 失败: %s", path, exc_info=True)
-        return JSONResponse(status_code=500, content={"error": f"读取失败: {exc}"})
+        logger.warning("Failed to read artifact: %s", path, exc_info=True)
+        return JSONResponse(status_code=500, content={"error": f"Read failed: {exc}"})
     return JSONResponse(content=result)
 
 
@@ -717,11 +722,11 @@ async def get_artifact(path: str = Query(...)) -> JSONResponse:
 # ---------------------------------------------------------------------------
 
 _PLACEHOLDER_HTML = """<!doctype html>
-<html lang="zh-CN">
+<html lang="en">
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>research_console</title>
+<title>Research Console</title>
 <style>
  body{font-family:system-ui,"Segoe UI",sans-serif;margin:0;padding:2.5rem;background:#0f1115;color:#e6e6e6;line-height:1.7}
  code{background:#1d2027;padding:.15rem .4rem;border-radius:4px;color:#ffd479}
@@ -732,16 +737,16 @@ _PLACEHOLDER_HTML = """<!doctype html>
 </head>
 <body>
 <div class="card">
-<h1>research_console 后端已就绪</h1>
-<p>前端静态资源（<code>research_console/static/</code>）尚未就位。后端 API 可直接调用：</p>
+<h1>Research Console Backend Is Ready</h1>
+<p>The frontend static assets in <code>research_console/static/</code> are not available yet. The backend API can still be called directly:</p>
 <ul>
- <li><a href="/api/health">GET /api/health</a> — 健康检查</li>
- <li><a href="/api/catalog">GET /api/catalog</a> — 公司/年度产物目录</li>
- <li><a href="/docs">GET /docs</a> — OpenAPI 交互文档</li>
- <li><code>POST /api/runs</code> — 创建运行（company / industry / demo / replay）</li>
- <li><code>GET /api/runs/&lt;id&gt;/events</code> — SSE 事件流</li>
+ <li><a href="/api/health">GET /api/health</a> — Health check</li>
+ <li><a href="/api/catalog">GET /api/catalog</a> — Company and fiscal-year artifact catalog</li>
+ <li><a href="/docs">GET /docs</a> — Interactive OpenAPI documentation</li>
+ <li><code>POST /api/runs</code> — Create a run (company / industry / demo / replay)</li>
+ <li><code>GET /api/runs/&lt;id&gt;/events</code> — SSE event stream</li>
 </ul>
-<p>把前端产物放入 <code>static/</code> 后刷新本页即可加载游戏化界面。</p>
+<p>Add the frontend assets to <code>static/</code> and refresh this page to load the research interface.</p>
 </div>
 </body>
 </html>
@@ -781,9 +786,9 @@ def _mount_static() -> None:
     """
     if config.STATIC_DIR.exists() and config.STATIC_DIR.is_dir():
         app.mount("/", StaticFiles(directory=str(config.STATIC_DIR), html=True), name="static")
-        logger.info("已挂载静态目录到根路径: %s", config.STATIC_DIR)
+        logger.info("Mounted static directory at root path: %s", config.STATIC_DIR)
     else:
-        logger.info("静态目录不存在，跳过挂载: %s", config.STATIC_DIR)
+        logger.info("Static directory not found; skipped mounting: %s", config.STATIC_DIR)
 
 
 _mount_static()

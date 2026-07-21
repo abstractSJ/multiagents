@@ -22,8 +22,23 @@ from datetime import date, datetime, timezone
 from pathlib import Path
 from typing import Any
 
-
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
+if __package__ in (None, ""):
+    # 控制台和文档都允许直接执行本文件；此时 Python 只会把脚本所在目录加入
+    # 模块搜索路径，因此必须显式加入项目根目录，才能解析同级顶层包的绝对导入。
+    sys.path.insert(0, str(PROJECT_ROOT))
+
+from research_orchestrator_scripts.recent_filing_policy import (
+    INTERIM_REPORT_TYPES,
+    PERIOD_MONTHS,
+    build_filing_identity,
+    calculate_financial_input_fingerprint,
+    derive_recent_filing_plan,
+    filing_id,
+    normalize_filing_policy,
+)
+
+
 DEPTH_RANK = {"quick": 1, "standard": 2, "deep": 3}
 PROCESSOR_REQUIRED_KEYS = [
     "content_json",
@@ -55,11 +70,13 @@ class ResearchAuditRequest:
     """公司研究状态审计请求。
 
     参数：
-        target: 用户传入的公司名或股票代码；如果是 6 位数字，会被视作股票代码。
-        stock_code: 明确的股票代码。
+        target: 用户传入的公司名或股票代码；如果是 6 位数字，会被视作Stock code.
+        stock_code: 明确的Stock code.
         company_name: 明确的公司简称或全称。
-        report_year: 财报所属年度，例如 2025；为空时从已有记录中选择最新年度。
-        report_type: 财报类型，默认 annual。
+        report_year: 显式单份模式的财报年度；为空时默认近期历史模式。
+        report_type: 显式单份模式的报告类型；为空时默认近期历史模式。
+        filing_policy: recent_history 或 single_filing；为空时按显式筛选自动判断。
+        annual_lookback: 近期历史模式保留的实际可得年报数量。
         depth: 本次研究深度，影响正式财务分析复用兼容性。
         focus: 本次研究重点，影响正式财务分析复用兼容性。
         as_of_date: 估值观察日；同日估值可复用，旧估值标记为 stale。
@@ -74,7 +91,9 @@ class ResearchAuditRequest:
     stock_code: str = ""
     company_name: str = ""
     report_year: str = ""
-    report_type: str = "annual"
+    report_type: str = ""
+    filing_policy: str = ""
+    annual_lookback: int = 2
     depth: str = "standard"
     focus: str = ""
     as_of_date: str = ""
@@ -147,31 +166,49 @@ class DatedCandidates:
 def audit_company_research_state(project_root: str | Path, request: ResearchAuditRequest) -> dict[str, Any]:
     """审计单家公司研究链路的本地复用状态。
 
-    参数：
-        project_root: 项目根目录。
-        request: 审计请求。
-    返回值：
-        可直接 JSON 序列化的研究状态字典。
+    默认近期历史模式会同时审计多份财报；显式固定报告类型和财年时继续使用原有
+    单份财报语义。两种模式共享顶层兼容字段，避免旧调用方在升级时立即失效。
     """
     root = Path(project_root).resolve()
     normalized_request = normalize_request(request)
+    if normalized_request.filing_policy == "recent_history":
+        return audit_recent_history_state(root, normalized_request)
+    return audit_single_filing_state(root, normalized_request)
 
-    collector_layer, selection = audit_collector_layer(root, normalized_request)
+
+def audit_single_filing_state(root: Path, request: ResearchAuditRequest) -> dict[str, Any]:
+    """执行向后兼容的单份财报状态审计。"""
+    collector_layer, selection = audit_collector_layer(root, request)
     target = selection.target
-    processor_layer = audit_processor_layer(root, target, selection.main_record)
-    financial_dirs = find_financial_artifact_dirs(root, target, normalized_request)
+    processor_layer = audit_processor_layer(
+        root,
+        target,
+        selection.main_record,
+        summary_required=bool(selection.summary_record),
+    )
+    processor_pdf_sha256, processor_identity_gap = verified_processor_pdf_hash(
+        root,
+        processor_layer,
+        selection.main_record,
+    )
+    processor_layer = apply_processor_identity_gap(processor_layer, processor_identity_gap)
+    financial_dirs = find_financial_artifact_dirs(root, target, request)
     financial_draft_layer = audit_financial_draft_layer(financial_dirs.evidence_dir)
-    formal_financial_layer = audit_formal_financial_layer(financial_dirs.formal_dir, normalized_request)
+    formal_financial_layer = audit_formal_financial_layer(financial_dirs.formal_dir, request)
 
     if collector_layer["status"] == "future_incompatible":
-        # 历史基准日下，未来披露财报即使已经下载、解析或分析，也不能倒灌进当时可知状态。
-        processor_layer = block_layer_for_future_cutoff(processor_layer, "信息处理层")
-        financial_draft_layer = block_layer_for_future_cutoff(financial_draft_layer, "财务证据草稿层")
-        formal_financial_layer = block_layer_for_future_cutoff(formal_financial_layer, "正式财务分析层")
+        processor_layer = block_layer_for_future_cutoff(processor_layer, "Information processing layer")
+        financial_draft_layer = block_layer_for_future_cutoff(financial_draft_layer, "Financial evidence draft layer")
+        formal_financial_layer = block_layer_for_future_cutoff(formal_financial_layer, "Formal financial analysis layer")
 
-    valuation_layer = audit_valuation_layer(root, target, normalized_request)
-    market_context_layer = audit_market_context_layer(root, target, normalized_request)
-
+    identity = (
+        build_filing_identity(selection.main_record or {}, pdf_sha256=processor_pdf_sha256)
+        if selection.main_record
+        else {}
+    )
+    fingerprint = calculate_financial_input_fingerprint([identity]) if identity else ""
+    valuation_layer = audit_valuation_layer(root, target, request)
+    market_context_layer = audit_market_context_layer(root, target, request)
     layers = {
         "collector": collector_layer,
         "processor": processor_layer,
@@ -181,14 +218,86 @@ def audit_company_research_state(project_root: str | Path, request: ResearchAudi
         "market_context": market_context_layer,
     }
     reusable = build_reusable_flags(layers)
-    next_actions = build_next_actions(layers, normalized_request)
-    skipped_actions = build_skipped_actions(layers, normalized_request, next_actions)
-
-    state = {
-        "schema_version": "1.0",
+    next_actions = build_next_actions(layers, request)
+    skipped_actions = build_skipped_actions(layers, request, next_actions)
+    filing_entry = build_single_filing_state_entry(target, collector_layer, processor_layer, identity)
+    return {
+        "schema_version": "2.0",
         "generated_at": datetime.now(timezone.utc).isoformat(),
-        "knowledge_cutoff": normalized_request.as_of_date,
-        "request": request_to_dict(normalized_request),
+        "knowledge_cutoff": request.as_of_date,
+        "request": request_to_dict(request),
+        "filing_policy": request.filing_policy,
+        "filing_plan": [],
+        "filings": [filing_entry] if filing_entry else [],
+        "financial_input_fingerprint": fingerprint,
+        "target": target,
+        "layers": layers,
+        "reusable": reusable,
+        "skipped_actions": skipped_actions,
+        "next_actions": next_actions,
+        "summary": build_summary(layers, reusable, skipped_actions, next_actions),
+    }
+
+
+def audit_recent_history_state(root: Path, request: ResearchAuditRequest) -> dict[str, Any]:
+    """审计截止日前近期年报与中报集合，并生成逐份续跑状态。"""
+    collector_workspace = root / "info_collector_scripts" / "collector_workspace"
+    manifest_path = collector_workspace / "manifests" / "cninfo_all_reports.json"
+    records = load_json_list(manifest_path)
+    company_records = [record for record in records if record_matches_company(record, request)]
+    plan_items = derive_recent_filing_plan(request.as_of_date, annual_lookback=request.annual_lookback)
+    entries = [
+        audit_planned_filing(root, request, collector_workspace, manifest_path, company_records, item.to_dict())
+        for item in plan_items
+    ]
+    mark_required_recent_filings(entries, request.annual_lookback)
+    required_entries = [entry for entry in entries if entry.get("required")]
+    available_entries = [entry for entry in required_entries if entry.get("selected_record")]
+    primary_entry = choose_primary_filing_entry(available_entries)
+    primary_record = primary_entry.get("selected_record") if primary_entry else None
+    target = build_target_from_records(request, primary_record, company_records)
+
+    identities = [entry["identity"] for entry in available_entries if entry.get("identity")]
+    fingerprint = calculate_financial_input_fingerprint(identities) if identities else ""
+    collector_layer = aggregate_recent_layer(required_entries, "collector")
+    processor_layer = aggregate_recent_layer(required_entries, "processor")
+
+    filing_set_dir = (
+        root
+        / "financial_analyst_scripts"
+        / "analyst_workspace"
+        / "filing_sets"
+        / (target.get("stock_code") or "unknown_code")
+        / request.as_of_date
+    )
+    financial_draft_layer = audit_filing_set_layer(filing_set_dir, fingerprint)
+    formal_financial_layer = audit_formal_financial_layer(
+        filing_set_dir,
+        request,
+        financial_input_fingerprint=fingerprint,
+    )
+    valuation_layer = audit_valuation_layer(root, target, request, financial_input_fingerprint=fingerprint)
+    market_context_layer = audit_market_context_layer(root, target, request)
+    layers = {
+        "collector": collector_layer,
+        "processor": processor_layer,
+        "financial_evidence_draft": financial_draft_layer,
+        "formal_financial_analysis": formal_financial_layer,
+        "valuation": valuation_layer,
+        "market_context": market_context_layer,
+    }
+    reusable = build_reusable_flags(layers)
+    next_actions = build_recent_next_actions(required_entries, layers, request)
+    skipped_actions = build_skipped_actions(layers, request, next_actions)
+    state = {
+        "schema_version": "2.0",
+        "generated_at": datetime.now(timezone.utc).isoformat(),
+        "knowledge_cutoff": request.as_of_date,
+        "request": request_to_dict(request),
+        "filing_policy": request.filing_policy,
+        "filing_plan": [dict(item.to_dict(), required=next((e.get("required", False) for e in entries if e["report_type"] == item.report_type and e["report_year"] == item.report_year), False)) for item in plan_items],
+        "filings": required_entries,
+        "financial_input_fingerprint": fingerprint,
         "target": target,
         "layers": layers,
         "reusable": reusable,
@@ -197,6 +306,240 @@ def audit_company_research_state(project_root: str | Path, request: ResearchAudi
         "summary": build_summary(layers, reusable, skipped_actions, next_actions),
     }
     return state
+
+
+def record_matches_company(record: dict[str, Any], request: ResearchAuditRequest) -> bool:
+    """只按公司身份过滤记录，故意忽略单份财报类型和财年字段。"""
+    if request.stock_code and str(record.get("stock_code") or "") != request.stock_code:
+        return False
+    if request.company_name:
+        haystack = f"{record.get('company_name', '')} {record.get('title', '')}"
+        if request.company_name not in haystack:
+            return False
+    return bool(request.stock_code or request.company_name or request.target)
+
+
+def audit_planned_filing(
+    root: Path,
+    request: ResearchAuditRequest,
+    collector_workspace: Path,
+    manifest_path: Path,
+    company_records: list[dict[str, Any]],
+    plan_item: dict[str, Any],
+) -> dict[str, Any]:
+    """审计一个候选类型/财年对应的采集与处理产物。"""
+    report_type = str(plan_item["report_type"])
+    report_year = str(plan_item["report_year"])
+    matched = [
+        record
+        for record in company_records
+        if str(record.get("report_type") or "") == report_type
+        and str(record.get("report_year") or "") == report_year
+    ]
+    cutoff = parse_strict_iso_date(request.as_of_date, "as_of_date")
+    eligible, future, undated = classify_report_records_by_cutoff(matched, cutoff)
+    main_record = choose_best_record(
+        [record for record in eligible if not is_summary_record(record) and not is_english_record(record)],
+        collector_workspace,
+    )
+    summary_record = None
+    if report_type == "annual":
+        summary_record = choose_best_record([record for record in eligible if is_summary_record(record)], collector_workspace)
+    main_pdf = resolve_record_pdf_path(collector_workspace, main_record)
+    if not manifest_path.exists():
+        collector_status = "missing"
+        collector_gaps = ["The financial-report manifest does not exist."]
+    elif not main_record:
+        collector_status = "missing"
+        collector_gaps = [f"No eligible official {report_type} filing for fiscal year {report_year} is recorded on or before the cutoff."]
+    elif not main_pdf or not main_pdf.exists():
+        collector_status = "partial"
+        collector_gaps = ["The official filing record exists, but its local PDF is missing."]
+    else:
+        collector_status = "ready"
+        collector_gaps = []
+    target = {
+        "stock_code": str((main_record or {}).get("stock_code") or request.stock_code or ""),
+        "company_name": str((main_record or {}).get("company_name") or request.company_name or request.target or ""),
+        "report_year": report_year,
+        "report_type": report_type,
+        "report_stem": Path(str((main_record or {}).get("local_relative_path") or "")).stem,
+        "announcement_id": str((main_record or {}).get("announcement_id") or ""),
+        "published_at": str((main_record or {}).get("published_at") or ""),
+    }
+    summary_required = bool(report_type == "annual" and summary_record)
+    processor = audit_processor_layer(root, target, main_record, summary_required=summary_required)
+    processor_pdf_sha256, processor_identity_gap = verified_processor_pdf_hash(root, processor, main_record)
+    processor = apply_processor_identity_gap(processor, processor_identity_gap)
+    identity = build_filing_identity(main_record or {}, pdf_sha256=processor_pdf_sha256) if main_record else {}
+    return {
+        "filing_id": filing_id(identity) if identity else f"{target['stock_code'] or 'unknown'}:{report_type}:{report_year}:pending",
+        "role": plan_item.get("role"),
+        "required": False,
+        "expected_by_cutoff": bool(plan_item.get("expected_by_cutoff", True)),
+        "report_type": report_type,
+        "report_year": report_year,
+        "period_months": int(plan_item.get("period_months") or PERIOD_MONTHS[report_type]),
+        "disclosure_window": {
+            "start": plan_item.get("disclosure_start"),
+            "end": plan_item.get("disclosure_end"),
+        },
+        "identity": identity,
+        "selected_record": trim_record(main_record),
+        "summary_record": trim_record(summary_record),
+        "summary_comparison": "required" if summary_required else "not_applicable",
+        "collector": {
+            "status": collector_status,
+            "artifacts": {"main_pdf": path_state(main_pdf), "summary_pdf": path_state(resolve_record_pdf_path(collector_workspace, summary_record))},
+            "date_audit": {
+                "cutoff": request.as_of_date,
+                "matched_count": len(matched),
+                "eligible_count": len(eligible),
+                "future_count": len(future),
+                "undated_count": len(undated),
+            },
+            "gaps": collector_gaps,
+        },
+        "processor": processor,
+    }
+
+
+def mark_required_recent_filings(entries: list[dict[str, Any]], annual_lookback: int) -> None:
+    """原地标记真正必需的年报基线和所有已开放中报候选。"""
+    annual_entries = sorted(
+        [entry for entry in entries if entry["report_type"] == "annual"],
+        key=lambda entry: int(entry["report_year"]),
+        reverse=True,
+    )
+    available = [entry for entry in annual_entries if entry.get("selected_record")]
+    selected = available[:annual_lookback]
+    for entry in selected:
+        entry["required"] = True
+        entry["role"] = "latest_annual" if entry is selected[0] else "historical_annual"
+    missing_needed = annual_lookback - len(selected)
+    if missing_needed > 0:
+        for entry in annual_entries:
+            if entry.get("required") or entry.get("selected_record"):
+                continue
+            entry["required"] = True
+            entry["role"] = "missing_annual_baseline"
+            missing_needed -= 1
+            if missing_needed == 0:
+                break
+    for entry in entries:
+        if entry["report_type"] in INTERIM_REPORT_TYPES:
+            # 尚未到常规披露截止日的当前期中报只做发现查询；一旦实际披露就立即纳入。
+            entry["required"] = bool(entry.get("selected_record") or entry.get("expected_by_cutoff"))
+
+
+def choose_primary_filing_entry(entries: list[dict[str, Any]]) -> dict[str, Any] | None:
+    """选择截止日前最新披露的财报作为旧顶层 target 的兼容目标。"""
+    if not entries:
+        return None
+    return sorted(
+        entries,
+        key=lambda entry: (
+            str((entry.get("selected_record") or {}).get("published_at") or ""),
+            int(entry.get("report_year") or 0),
+            int(entry.get("period_months") or 0),
+        ),
+        reverse=True,
+    )[0]
+
+
+def aggregate_recent_layer(entries: list[dict[str, Any]], layer_name: str) -> dict[str, Any]:
+    """把逐份状态聚合成兼容旧 console 的顶层层状态。"""
+    statuses = [str((entry.get(layer_name) or {}).get("status") or "missing") for entry in entries]
+    if statuses and all(status == "ready" for status in statuses):
+        status = "ready"
+    elif statuses and all(status in {"missing", "blocked", "future_incompatible"} for status in statuses):
+        status = "missing"
+    else:
+        status = "partial"
+    gaps: list[str] = []
+    for entry in entries:
+        layer = entry.get(layer_name) or {}
+        for gap in layer.get("gaps") or []:
+            gaps.append(f"{entry['report_type']} {entry['report_year']}: {gap}")
+    return {
+        "status": status,
+        "filing_count": len(entries),
+        "ready_count": sum(1 for item in statuses if item == "ready"),
+        "filings": [
+            {
+                "filing_id": entry["filing_id"],
+                "report_type": entry["report_type"],
+                "report_year": entry["report_year"],
+                "status": (entry.get(layer_name) or {}).get("status"),
+            }
+            for entry in entries
+        ],
+        "gaps": gaps,
+    }
+
+
+def build_recent_next_actions(
+    entries: list[dict[str, Any]],
+    layers: dict[str, dict[str, Any]],
+    request: ResearchAuditRequest,
+) -> list[dict[str, str]]:
+    """按财报逐份生成采集/处理动作，再衔接财务分析和估值动作。"""
+    actions: list[dict[str, str]] = []
+    if request.force_refresh:
+        return build_next_actions(layers, request)
+    for entry in entries:
+        collector_status = str((entry.get("collector") or {}).get("status") or "missing")
+        if collector_status != "ready":
+            item = action(
+                "collector_fetch",
+                "information-collector",
+                f"Collect the eligible {entry['report_type']} filing for fiscal year {entry['report_year']} within the cutoff-safe disclosure window.",
+            )
+            item["filing_id"] = entry["filing_id"]
+            item["report_type"] = entry["report_type"]
+            item["report_year"] = entry["report_year"]
+            actions.append(item)
+    if actions:
+        return actions
+    for entry in entries:
+        processor_status = str((entry.get("processor") or {}).get("status") or "missing")
+        if processor_status == "ready":
+            continue
+        for item in build_processor_next_actions(entry.get("processor") or {}):
+            item["filing_id"] = entry["filing_id"]
+            item["report_type"] = entry["report_type"]
+            item["report_year"] = entry["report_year"]
+            actions.append(item)
+    if actions:
+        actions.extend(build_market_context_next_actions(layers["market_context"]))
+        return actions
+    return build_next_actions(layers, request)
+
+
+def build_single_filing_state_entry(
+    target: dict[str, str],
+    collector_layer: dict[str, Any],
+    processor_layer: dict[str, Any],
+    identity: dict[str, str],
+) -> dict[str, Any]:
+    """把旧单份状态映射为 schema 2.0 的统一 filings 条目。"""
+    if not any(target.values()):
+        return {}
+    report_type = target.get("report_type") or "annual"
+    return {
+        "filing_id": filing_id(identity) if identity else f"{target.get('stock_code') or 'unknown'}:{report_type}:{target.get('report_year') or 'unknown'}:pending",
+        "role": "explicit_single_filing",
+        "required": True,
+        "report_type": report_type,
+        "report_year": target.get("report_year") or "",
+        "period_months": PERIOD_MONTHS.get(report_type, 12),
+        "identity": identity,
+        "selected_record": collector_layer.get("selected_record") or {},
+        "summary_record": collector_layer.get("summary_record") or {},
+        "summary_comparison": (processor_layer.get("artifacts") or {}).get("summary_comparison_applicability", {}).get("status", "required"),
+        "collector": collector_layer,
+        "processor": processor_layer,
+    }
 
 
 def parse_strict_iso_date(value: Any, field_name: str) -> date:
@@ -213,13 +556,13 @@ def parse_strict_iso_date(value: Any, field_name: str) -> date:
     """
     text = str(value or "").strip()
     if not re.fullmatch(r"\d{4}-\d{2}-\d{2}", text):
-        raise ValueError(f"{field_name} 必须是严格 ISO 日期 YYYY-MM-DD，当前值：{text or '<empty>'}")
+        raise ValueError(f"{field_name} must be a strict ISO date in YYYY-MM-DD format; received: {text or '<empty>'}")
     try:
         parsed = date.fromisoformat(text)
     except ValueError as exc:
-        raise ValueError(f"{field_name} 不是有效日期：{text}") from exc
+        raise ValueError(f"{field_name} is not a valid date: {text}") from exc
     if parsed.isoformat() != text:
-        raise ValueError(f"{field_name} 必须是严格 ISO 日期 YYYY-MM-DD，当前值：{text}")
+        raise ValueError(f"{field_name} must be a strict ISO date in YYYY-MM-DD format; received: {text}")
     return parsed
 
 
@@ -242,12 +585,28 @@ def normalize_request(request: ResearchAuditRequest) -> ResearchAuditRequest:
     as_of_date = str(request.as_of_date or "").strip()
     if as_of_date:
         as_of_date = parse_strict_iso_date(as_of_date, "as_of_date").isoformat()
+    report_year = str(request.report_year or "").strip()
+    report_type = str(request.report_type or "").strip().lower()
+    filing_policy = normalize_filing_policy(
+        request.filing_policy,
+        report_type=report_type,
+        report_year=report_year,
+    )
+    if filing_policy == "recent_history" and not as_of_date:
+        as_of_date = date.today().isoformat()
+    if filing_policy == "single_filing" and not report_type:
+        report_type = "annual"
+    annual_lookback = int(request.annual_lookback or 2)
+    if annual_lookback < 1 or annual_lookback > 5:
+        raise ValueError("annual_lookback must be between 1 and 5")
     return ResearchAuditRequest(
         target=target,
         stock_code=stock_code,
         company_name=company_name,
-        report_year=str(request.report_year or "").strip(),
-        report_type=str(request.report_type or "annual").strip() or "annual",
+        report_year=report_year,
+        report_type=report_type,
+        filing_policy=filing_policy,
+        annual_lookback=annual_lookback,
         depth=depth,
         focus=str(request.focus or "").strip(),
         as_of_date=as_of_date,
@@ -271,6 +630,8 @@ def request_to_dict(request: ResearchAuditRequest) -> dict[str, Any]:
         "company_name": request.company_name,
         "report_year": request.report_year,
         "report_type": request.report_type,
+        "filing_policy": request.filing_policy,
+        "annual_lookback": request.annual_lookback,
         "depth": request.depth,
         "focus": request.focus,
         "as_of_date": request.as_of_date,
@@ -305,23 +666,23 @@ def audit_collector_layer(root: Path, request: ResearchAuditRequest) -> tuple[di
 
     if selection.ambiguous_choices:
         status = "ambiguous"
-        gaps.append("目标命中多个股票代码或报告年度，需要先明确 stock_code/report_year。")
+        gaps.append("The target matched multiple stock codes or report years. Specify stock_code/report_year first.")
     elif not manifest_path.exists():
         status = "missing"
-        gaps.append("财报 manifest 不存在，需要先运行 information-collector。")
+        gaps.append("The financial-report manifest does not exist. Run information-collector first.")
     elif not selection.main_record and future_main_records and not undated_main_records:
         status = "future_incompatible"
         gaps.append(
-            f"命中的正式财报均在知识截止日 {request.as_of_date} 之后披露，不能用于历史基准日研究。"
+            f"All matched official reports were published after the knowledge cutoff {request.as_of_date} and cannot be used for historical as-of-date research."
         )
     elif not selection.main_record:
         status = "missing"
-        gaps.append("manifest 中没有命中知识截止日前已披露的正式财报记录。")
+        gaps.append("The manifest contains no matched official report published on or before the knowledge cutoff.")
         if undated_main_records:
-            gaps.append("存在缺少或无法解析 published_at 的正式财报记录，历史审计中不能选用。")
+            gaps.append("Some official report records have missing or unparseable published_at values and cannot be selected for historical auditing.")
     elif not main_pdf_path or not main_pdf_path.exists():
         status = "partial"
-        gaps.append("正式财报 PDF 记录存在但本地文件缺失，需要补下载。")
+        gaps.append("An official report PDF record exists, but the local file is missing and must be downloaded.")
 
     layer = {
         "status": status,
@@ -513,13 +874,15 @@ def choose_best_record(records: list[dict[str, Any]], collector_workspace: Path)
     if not records:
         return None
 
-    def score(record: dict[str, Any]) -> tuple[int, str]:
-        # 优先选择本地文件已存在、分类明确为 annual_full、披露日期较新的记录。
+    def score(record: dict[str, Any]) -> tuple[str, int, int]:
+        # 披露日期必须优先于本地存在性：较新的修订版即使尚未下载，也应被选中并把
+        # collector 标成 partial，随后精确补下载；否则旧本地文件会永久遮蔽正式修订。
         pdf_path = resolve_record_pdf_path(collector_workspace, record)
-        exists_score = 10 if pdf_path and pdf_path.exists() else 0
-        class_score = 5 if str(record.get("title_classification", "")) in {"annual_full", "report_full"} else 0
+        exists_score = 1 if pdf_path and pdf_path.exists() else 0
+        classification = str(record.get("title_classification", ""))
+        class_score = 1 if classification.endswith("_full") or classification == "report_full" else 0
         date_score = str(record.get("published_at", ""))
-        return exists_score + class_score, date_score
+        return date_score, class_score, exists_score
 
     return sorted(records, key=score, reverse=True)[0]
 
@@ -592,8 +955,14 @@ def resolve_record_pdf_path(collector_workspace: Path, record: dict[str, Any] | 
     return collector_workspace / relative_path
 
 
-def audit_processor_layer(root: Path, target: dict[str, str], main_record: dict[str, Any] | None) -> dict[str, Any]:
-    """审计信息处理层，检查解析、digest、RAG 和摘要比对产物。
+def audit_processor_layer(
+    root: Path,
+    target: dict[str, str],
+    main_record: dict[str, Any] | None,
+    *,
+    summary_required: bool = True,
+) -> dict[str, Any]:
+    """审计信息处理层，检查解析、digest、RAG 和按需摘要比对产物。
 
     参数：
         root: 项目根目录。
@@ -604,19 +973,24 @@ def audit_processor_layer(root: Path, target: dict[str, str], main_record: dict[
     """
     report_dir = find_processor_report_dir(root, target, main_record)
     artifacts = build_processor_artifacts(report_dir)
-    missing = [key for key in PROCESSOR_REQUIRED_KEYS if not artifacts[key]["exists"]]
-    gaps = [f"缺少 {key}" for key in missing]
+    required_keys = [key for key in PROCESSOR_REQUIRED_KEYS if summary_required or key != "summary_comparison_json"]
+    missing = [key for key in required_keys if not artifacts[key]["exists"]]
+    gaps = [f"Missing {key}" for key in missing]
+    artifacts["summary_comparison_applicability"] = {
+        "status": "required" if summary_required else "not_applicable",
+        "exists": artifacts["summary_comparison_json"]["exists"] if summary_required else False,
+    }
     digest_audit = load_json(Path(artifacts["digest_audit_json"]["path"])) if artifacts["digest_audit_json"]["path"] else {}
     missing_chunks = digest_audit.get("missing_chunks", []) if isinstance(digest_audit, dict) else []
     invalid_results = digest_audit.get("invalid_results", []) if isinstance(digest_audit, dict) else []
     if missing_chunks:
-        gaps.append(f"digest_audit 标记缺失 chunk：{len(missing_chunks)} 个")
+        gaps.append(f"digest_audit reports {len(missing_chunks)} missing chunks")
     if invalid_results:
-        gaps.append(f"digest_audit 标记无效 chunk：{len(invalid_results)} 个")
+        gaps.append(f"digest_audit reports {len(invalid_results)} invalid chunks")
 
-    if not report_dir:
+    if not report_dir or not report_dir.exists():
         status = "missing"
-        gaps.append("未找到信息处理员报告目录。")
+        gaps.append("Information-processor report directory not found.")
     elif not missing and not missing_chunks and not invalid_results:
         status = "ready"
     else:
@@ -649,7 +1023,7 @@ def block_layer_for_future_cutoff(layer: dict[str, Any], layer_name: str) -> dic
     """
     blocked = dict(layer)
     gaps = list(layer.get("gaps", []))
-    gaps.insert(0, f"{layer_name}依赖的正式财报晚于知识截止日，禁止复用本地未来产物。")
+    gaps.insert(0, f"The official report used by {layer_name} is later than the knowledge cutoff; local future artifacts cannot be reused.")
     blocked["status"] = "blocked"
     blocked["blocked_by"] = "collector.future_incompatible"
     blocked["gaps"] = gaps
@@ -670,15 +1044,120 @@ def find_processor_report_dir(root: Path, target: dict[str, str], main_record: d
     report_type = target.get("report_type", "annual")
     report_year = target.get("report_year", "")
     stock_code = target.get("stock_code", "")
-    candidates: list[Path] = []
     if main_record and main_record.get("local_relative_path"):
         stem = Path(str(main_record["local_relative_path"])).stem
-        candidates.append(processor_workspace / report_type / report_year / stock_code / stem)
+        exact = processor_workspace / report_type / report_year / stock_code / stem
+        if exact.exists():
+            # 已选公告的目录即使尚未补齐，也不能被同财年摘要版或旧修订版的完整目录替换。
+            return exact
+        if stock_code and report_year:
+            for candidate in (processor_workspace / report_type / report_year / stock_code).glob("*"):
+                if processor_dir_matches_record(candidate, main_record):
+                    return candidate
+        return exact
+
+    candidates: list[Path] = []
     if stock_code and report_year:
         candidates.extend((processor_workspace / report_type / report_year / stock_code).glob("*"))
     if target.get("report_stem"):
         candidates.extend(processor_workspace.glob(f"**/{target['report_stem']}"))
     return choose_best_dir(candidates, ["content.json", "llm_digest.json", "digest_audit.json"])
+
+
+def processor_dir_matches_record(report_dir: Path, main_record: dict[str, Any]) -> bool:
+    """核验处理目录是否确实来自当前选中的公告记录。"""
+    content = load_json(report_dir / "content.json")
+    metadata = content.get("document_metadata", {}) if isinstance(content, dict) else {}
+    expected_announcement = str(main_record.get("announcement_id") or "")
+    actual_announcement = str(metadata.get("announcement_id") or content.get("announcement_id") or "")
+    if expected_announcement and actual_announcement:
+        return expected_announcement == actual_announcement
+    expected_stem = Path(str(main_record.get("local_relative_path") or "")).stem
+    actual_stem = str(metadata.get("pdf_stem") or report_dir.name)
+    return bool(expected_stem and expected_stem == actual_stem)
+
+
+def verified_processor_pdf_hash(
+    root: Path,
+    processor_layer: dict[str, Any],
+    main_record: dict[str, Any] | None,
+) -> tuple[str, str | None]:
+    """从与当前公告匹配的 ``content.json`` 提取 PDF 指纹。
+
+    功能：
+        采集清单通常只记录公告身份，不一定保存下载文件的 SHA-256；信息处理层的
+        ``content.json`` 才保存实际处理文件的哈希。本函数把两者连接起来，但只在
+        处理目录、公告编号和源 PDF 路径都没有冲突时接受该哈希。
+
+    参数：
+        root: 项目根目录，用于解析相对路径。
+        processor_layer: ``audit_processor_layer`` 返回的处理层状态。
+        main_record: 当前审计选中的正式财报清单记录。
+
+    返回值：
+        ``(pdf_sha256, identity_gap)``。缺少哈希不是错误，返回空字符串和 ``None``；
+        如果处理产物明确属于另一份财报，则返回空哈希和可展示的身份缺口。
+    """
+    if not main_record:
+        return "", None
+    artifacts = processor_layer.get("artifacts") if isinstance(processor_layer, dict) else {}
+    content_info = artifacts.get("content_json") if isinstance(artifacts, dict) else {}
+    raw_path = content_info.get("path") if isinstance(content_info, dict) else ""
+    if not raw_path:
+        return "", None
+    content_path = Path(str(raw_path))
+    if not content_path.is_absolute():
+        content_path = root / content_path
+    if not content_path.exists():
+        return "", None
+
+    content = load_json(content_path)
+    if not isinstance(content, dict):
+        return "", "The selected processor content.json is not a valid JSON object."
+
+    # 先复用现有的公告编号/文件名匹配规则，避免从同一财年其他修订版目录借用哈希。
+    if not processor_dir_matches_record(content_path.parent, main_record):
+        return "", "The selected processor content does not match the selected filing identity."
+
+    expected_pdf = resolve_record_pdf_path(
+        root / "info_collector_scripts" / "collector_workspace",
+        main_record,
+    )
+    source_pdf_path = content.get("source_pdf_path")
+    if not source_pdf_path:
+        metadata = content.get("document_metadata")
+        if isinstance(metadata, dict):
+            source_pdf_path = metadata.get("source_pdf_path")
+    if source_pdf_path and expected_pdf:
+        actual_path = Path(str(source_pdf_path))
+        if not actual_path.is_absolute():
+            actual_path = root / actual_path
+        try:
+            paths_match = actual_path.resolve() == expected_pdf.resolve()
+        except OSError:
+            paths_match = str(actual_path) == str(expected_pdf)
+        if not paths_match:
+            return "", "The selected processor content points to a different source PDF."
+
+    pdf_sha256 = str(content.get("pdf_sha256") or "").strip()
+    return pdf_sha256, None
+
+
+def apply_processor_identity_gap(
+    processor_layer: dict[str, Any],
+    identity_gap: str | None,
+) -> dict[str, Any]:
+    """把处理产物身份冲突转换成不可复用的处理层状态。"""
+    if not identity_gap:
+        return processor_layer
+    updated = dict(processor_layer)
+    gaps = list(updated.get("gaps") or [])
+    if identity_gap not in gaps:
+        gaps.append(identity_gap)
+    updated["gaps"] = gaps
+    if str(updated.get("status") or "") == "ready":
+        updated["status"] = "partial"
+    return updated
 
 
 def build_processor_artifacts(report_dir: Path | None) -> dict[str, dict[str, Any]]:
@@ -726,9 +1205,12 @@ def find_financial_artifact_dirs(
     report_stem = target.get("report_stem", "")
 
     candidates: set[Path] = set()
-    exact_root = analyst_workspace / "reports" / report_type / report_year / stock_code
-    if exact_root.exists():
-        candidates.update(path for path in exact_root.glob("*") if path.is_dir())
+    # 只有规范代码和财年同时存在时才允许构造精确目录。空组件会把路径折叠到
+    # reports/<type>，进而把其他公司的年度目录误判成当前目标的部分财务产物。
+    if report_year and stock_code:
+        exact_root = analyst_workspace / "reports" / report_type / report_year / stock_code
+        if exact_root.exists():
+            candidates.update(path for path in exact_root.glob("*") if path.is_dir())
     if report_stem:
         candidates.update(path for path in analyst_workspace.glob(f"reports/**/{report_stem}"))
     if stock_code:
@@ -757,6 +1239,35 @@ def find_financial_artifact_dirs(
     return FinancialArtifacts(evidence_dir=evidence_dir, formal_dir=formal_dir)
 
 
+def audit_filing_set_layer(filing_set_dir: Path, expected_fingerprint: str) -> dict[str, Any]:
+    """审计公司级多期财报交接包，并核验其输入集合身份。"""
+    filing_set_path = filing_set_dir / "filing_set.json"
+    payload = load_json(filing_set_path)
+    actual_fingerprint = str(payload.get("financial_input_fingerprint") or "") if isinstance(payload, dict) else ""
+    if not filing_set_path.exists():
+        status = "missing"
+        gaps = ["filing_set.json is missing; build the multi-period financial evidence handoff."]
+    elif expected_fingerprint and actual_fingerprint != expected_fingerprint:
+        status = "incompatible"
+        gaps = ["filing_set.json does not match the currently selected filing identities."]
+    elif str((payload.get("quality") or {}).get("status") or "") == "partial":
+        status = "partial"
+        gaps = list((payload.get("quality") or {}).get("gaps") or [])
+    else:
+        status = "ready"
+        gaps = []
+    return {
+        "status": status,
+        "report_dir": path_state(filing_set_dir),
+        "artifacts": {"filing_set_json": path_state(filing_set_path)},
+        "analysis_metadata": {
+            "financial_input_fingerprint": actual_fingerprint,
+            "filing_count": int((payload.get("quality") or {}).get("filing_count") or 0) if isinstance(payload, dict) else 0,
+        },
+        "gaps": gaps,
+    }
+
+
 def audit_financial_draft_layer(evidence_dir: Path | None) -> dict[str, Any]:
     """审计财务证据草稿层。
 
@@ -778,7 +1289,7 @@ def audit_financial_draft_layer(evidence_dir: Path | None) -> dict[str, Any]:
         "report_dir": path_state(evidence_dir),
         "artifacts": artifacts,
         "analysis_metadata": extract_analysis_metadata(artifacts["analyst_report_json"]["path"]),
-        "gaps": [f"缺少 {key}" for key in missing],
+        "gaps": [f"Missing {key}" for key in missing],
     }
 
 
@@ -800,7 +1311,12 @@ def build_financial_draft_artifacts(evidence_dir: Path | None) -> dict[str, dict
     }
 
 
-def audit_formal_financial_layer(formal_dir: Path | None, request: ResearchAuditRequest) -> dict[str, Any]:
+def audit_formal_financial_layer(
+    formal_dir: Path | None,
+    request: ResearchAuditRequest,
+    *,
+    financial_input_fingerprint: str = "",
+) -> dict[str, Any]:
     """审计正式财务分析层，并判断 depth/focus 是否兼容。
 
     参数：
@@ -811,6 +1327,9 @@ def audit_formal_financial_layer(formal_dir: Path | None, request: ResearchAudit
     """
     artifacts = build_formal_financial_artifacts(formal_dir)
     missing = [key for key in FORMAL_FINANCIAL_REQUIRED_KEYS if not artifacts[key]["exists"]]
+    # 结构化 JSON 是估值和审计的权威输入；Markdown 只是人类可读镜像。缺少镜像应保留
+    # packaging gap，但不能把已经完成且截止合规的实质分析降为 partial 或触发重跑 Agent。
+    missing_core = [key for key in missing if key == "formal_financial_analysis_json"]
     formal_payload = load_json(Path(artifacts["formal_financial_analysis_json"]["path"])) if artifacts["formal_financial_analysis_json"]["path"] else {}
     metadata = extract_analysis_metadata(artifacts["formal_financial_analysis_json"]["path"])
     compatibility = check_analysis_compatibility(metadata, request)
@@ -818,15 +1337,26 @@ def audit_formal_financial_layer(formal_dir: Path | None, request: ResearchAudit
     if not cutoff_compatibility["compatible"]:
         compatibility["compatible"] = False
         compatibility["reasons"].extend(cutoff_compatibility["reasons"])
+    if financial_input_fingerprint and formal_payload:
+        actual_fingerprint = str(
+            formal_payload.get("financial_input_fingerprint")
+            or (formal_payload.get("analysis_metadata") or {}).get("financial_input_fingerprint")
+            or ""
+        )
+        if actual_fingerprint != financial_input_fingerprint:
+            compatibility["compatible"] = False
+            compatibility["reasons"].append(
+                "The formal financial analysis was not generated from the currently selected filing set."
+            )
     if not formal_dir:
         status = "missing"
-    elif missing:
+    elif missing_core:
         status = "partial"
     elif not compatibility["compatible"]:
         status = "incompatible"
     else:
         status = "ready"
-    gaps = [f"缺少 {key}" for key in missing]
+    gaps = [f"Missing {key}" for key in missing]
     gaps.extend(compatibility["reasons"])
     return {
         "status": status,
@@ -855,7 +1385,13 @@ def build_formal_financial_artifacts(formal_dir: Path | None) -> dict[str, dict[
     }
 
 
-def audit_valuation_layer(root: Path, target: dict[str, str], request: ResearchAuditRequest) -> dict[str, Any]:
+def audit_valuation_layer(
+    root: Path,
+    target: dict[str, str],
+    request: ResearchAuditRequest,
+    *,
+    financial_input_fingerprint: str = "",
+) -> dict[str, Any]:
     """审计估值层，并按 as_of_date 判断是否过期。
 
     参数：
@@ -872,7 +1408,7 @@ def audit_valuation_layer(root: Path, target: dict[str, str], request: ResearchA
             "report_dir": path_state(None),
             "artifacts": {key: path_state(None) for key in VALUATION_REQUIRED_KEYS},
             "latest_available_date": "",
-            "gaps": ["缺少股票代码，无法定位估值产物。"],
+            "gaps": ["Stock code is missing; valuation artifacts cannot be located."],
         }
 
     valuation_workspace = root / "valuation_analyst_scripts" / "valuation_workspace"
@@ -889,6 +1425,13 @@ def audit_valuation_layer(root: Path, target: dict[str, str], request: ResearchA
     cutoff_compatibility = check_cutoff_audit(
         valuation_audit, request.as_of_date, "valuation_audit"
     ) if request.as_of_date and exact else {"compatible": True, "audit": {}, "reasons": []}
+    if financial_input_fingerprint and exact:
+        actual_fingerprint = str(valuation_audit.get("financial_input_fingerprint") or "")
+        if actual_fingerprint != financial_input_fingerprint:
+            cutoff_compatibility["compatible"] = False
+            cutoff_compatibility["reasons"].append(
+                "The valuation was not generated from the currently selected filing set."
+            )
 
     if exact and not missing and cutoff_compatibility["compatible"]:
         status = "ready"
@@ -898,22 +1441,22 @@ def audit_valuation_layer(root: Path, target: dict[str, str], request: ResearchA
         gaps = list(cutoff_compatibility["reasons"])
     elif exact:
         status = "partial"
-        gaps = [f"缺少 {key}" for key in missing]
+        gaps = [f"Missing {key}" for key in missing]
         gaps.extend(cutoff_compatibility["reasons"])
     elif before:
         status = "stale"
-        gaps = [f"最近可用估值日期为 {before.parent.name}，早于本次 as_of_date={request.as_of_date}。"]
-        gaps.extend(f"缺少 {key}" for key in missing)
+        gaps = [f"The latest available valuation date is {before.parent.name}, earlier than as_of_date={request.as_of_date}."]
+        gaps.extend(f"Missing {key}" for key in missing)
     elif dated and dated.future:
         status = "future_incompatible"
-        gaps = [f"估值候选目录均晚于知识截止日 {request.as_of_date}，不能用于历史基准日研究。"]
+        gaps = [f"All valuation candidate directories are later than the knowledge cutoff {request.as_of_date} and cannot be used for historical as-of-date research."]
     elif latest and dated is None:
         # 未设置知识截止日时保持旧调用兼容：沿用原逻辑，把最新估值目录视为 ready。
         status = "ready"
         gaps = []
     else:
         status = "missing"
-        gaps = ["未找到估值报告。"]
+        gaps = ["Valuation report not found."]
 
     return {
         "status": status,
@@ -934,7 +1477,7 @@ def find_valuation_candidates(valuation_workspace: Path, stock_code: str) -> lis
 
     参数：
         valuation_workspace: 估值分析员工作区。
-        stock_code: 股票代码。
+        stock_code: Stock code.
     返回值：
         valuation_report.json 候选路径列表。
     """
@@ -1085,7 +1628,21 @@ def market_context_package_ready(
 def check_market_cutoff_compatibility(
     package: Any, sources: Any, collection_audit: Any, cutoff_text: str
 ) -> dict[str, Any]:
-    """校验市场上下文三件套的截止证明及 claim 来源使用边界。"""
+    """校验严格同日市场上下文三件套的截止证明和模型可见来源边界。
+
+    为什么同时核对两份来源表：``market_context_package.json`` 会直接进入模型上下文，
+    ``market_context_sources.json`` 则是独立的来源登记。如果二者只校验其中一份，未来或
+    无日期来源就可能通过另一份文件重新进入下游。因此严格同日复用必须保证两份表都只
+    含 eligible 行、来源 ID 集合一致，并且所有 claim 都能回指到安全来源。
+
+    参数：
+        package: ``market_context_package.json`` 内容。
+        sources: ``market_context_sources.json`` 内容。
+        collection_audit: ``collection_audit.json`` 内容。
+        cutoff_text: 请求中的严格 ISO 知识截止日。
+    返回值：
+        包含兼容性、英文缺口原因和三份截止审计元数据的字典。
+    """
     if not cutoff_text:
         return {"compatible": True, "reasons": [], "audits": {}}
     documents = {
@@ -1102,27 +1659,108 @@ def check_market_cutoff_compatibility(
         if isinstance(result["audit"], dict):
             for count_key in ("future_fact_claim_count", "undated_fact_claim_count"):
                 if count_key not in result["audit"]:
-                    reasons.append(f"{label}.cutoff_audit 缺少 {count_key}，无法证明 claim 合规。")
+                    reasons.append(f"{label}.cutoff_audit is missing {count_key}, so claim compliance cannot be proven.")
 
-    source_rows = sources.get("sources", []) if isinstance(sources, dict) else []
-    source_status = {
-        row.get("source_id"): row.get("cutoff_status")
-        for row in source_rows
-        if isinstance(row, dict) and row.get("source_id")
-    }
-    claims = package.get("claims", []) if isinstance(package, dict) else []
-    future_claims = [
-        claim
-        for claim in claims
-        if isinstance(claim, dict)
-        and (
-            claim.get("cutoff_status") == "future"
-            or source_status.get(claim.get("source_id")) == "future"
+    package_rows = package.get("source_table") if isinstance(package, dict) else None
+    source_rows = sources.get("sources") if isinstance(sources, dict) else None
+    package_source_ids, package_safe_count = validate_market_source_rows(
+        package_rows, "market_context_package.source_table", reasons
+    )
+    registered_source_ids, registered_safe_count = validate_market_source_rows(
+        source_rows, "market_context_sources.sources", reasons
+    )
+
+    if package_source_ids != registered_source_ids:
+        package_only = sorted(str(source_id) for source_id in package_source_ids - registered_source_ids)
+        sources_only = sorted(str(source_id) for source_id in registered_source_ids - package_source_ids)
+        reasons.append(
+            "The source-ID sets in market_context_package.source_table and market_context_sources.sources do not agree "
+            f"(package_only={package_only}, sources_only={sources_only})."
         )
-    ]
-    if future_claims:
-        reasons.append("市场上下文存在使用 future 来源生成的 claim。")
+
+    # accepted_source_count 代表真正暴露给模型的安全来源数，而不是采集阶段发现的总数。
+    # future_excluded_count、undated_discovery_count 等排除统计可以非零，但不能借此把被排除行
+    # 重新放回任一模型可见来源表。
+    for label, audit in audits.items():
+        if not isinstance(audit, dict) or "accepted_source_count" not in audit:
+            reasons.append(f"{label}.cutoff_audit is missing accepted_source_count.")
+            continue
+        accepted_source_count = audit.get("accepted_source_count")
+        if accepted_source_count != package_safe_count or accepted_source_count != registered_safe_count:
+            reasons.append(
+                f"{label}.cutoff_audit.accepted_source_count={accepted_source_count!r} does not match the safe source-row counts "
+                f"(package={package_safe_count}, sources={registered_safe_count})."
+            )
+
+    claims = package.get("claims", []) if isinstance(package, dict) else []
+    if not isinstance(claims, list):
+        reasons.append("market_context_package.claims must be a list for strict cutoff auditing.")
+    else:
+        safe_source_ids = package_source_ids & registered_source_ids
+        for index, claim in enumerate(claims):
+            if not isinstance(claim, dict):
+                reasons.append(f"market_context_package.claims[{index}] is not an object.")
+                continue
+            source_id = claim.get("source_id")
+            if source_id in (None, ""):
+                reasons.append(f"market_context_package.claims[{index}] is missing source_id.")
+            else:
+                try:
+                    source_is_safe = source_id in safe_source_ids
+                except TypeError:
+                    source_is_safe = False
+                if not source_is_safe:
+                    reasons.append(
+                        f"market_context_package.claims[{index}] references source_id={source_id!r}, which is not an eligible source present in both source tables."
+                    )
+            claim_cutoff_status = claim.get("cutoff_status")
+            if claim_cutoff_status not in (None, "eligible"):
+                reasons.append(
+                    f"market_context_package.claims[{index}] has cutoff_status={claim_cutoff_status!r}; strict exact-date claims must be eligible."
+                )
     return {"compatible": not reasons, "reasons": reasons, "audits": audits}
+
+
+def validate_market_source_rows(rows: Any, label: str, reasons: list[str]) -> tuple[set[Any], int]:
+    """验证单份模型可见市场来源表只包含有 ID 的 eligible 行。
+
+    为什么不根据 ``future_excluded_count`` 重建来源表：排除计数只是采集审计元数据，无法
+    证明具体哪一行已从模型输入删除。兼容性判断必须直接检查最终文件中的每一行，避免
+    “审计声称已排除、实际仍保留原文”的不一致包被复用。
+
+    参数：
+        rows: 来源行列表。
+        label: 用于英文错误定位的字段路径。
+        reasons: 共享缺口列表；本函数直接追加发现的问题。
+    返回值：
+        ``(source_id 集合, eligible 行数)``。集合仅供同次内存校验，不写入状态 JSON。
+    """
+    if not isinstance(rows, list):
+        reasons.append(f"{label} must be a list for strict cutoff auditing.")
+        return set(), 0
+
+    source_ids: set[Any] = set()
+    safe_row_count = 0
+    for index, row in enumerate(rows):
+        if not isinstance(row, dict):
+            reasons.append(f"{label}[{index}] is not an object.")
+            continue
+        cutoff_status = row.get("cutoff_status")
+        if cutoff_status != "eligible":
+            reasons.append(
+                f"{label}[{index}] has cutoff_status={cutoff_status!r}; model-facing strict exact-date source tables may contain only eligible rows."
+            )
+            continue
+        safe_row_count += 1
+        source_id = row.get("source_id")
+        if source_id in (None, ""):
+            reasons.append(f"{label}[{index}] is eligible but missing source_id.")
+            continue
+        try:
+            source_ids.add(source_id)
+        except TypeError:
+            reasons.append(f"{label}[{index}].source_id must be a scalar value.")
+    return source_ids, safe_row_count
 
 
 def audit_market_context_layer(root: Path, target: dict[str, str], request: ResearchAuditRequest) -> dict[str, Any]:
@@ -1144,7 +1782,7 @@ def audit_market_context_layer(root: Path, target: dict[str, str], request: Rese
             "latest_available_date": "",
             "requested_as_of_date": request.as_of_date,
             "quality_gate": {},
-            "gaps": ["缺少股票代码，无法定位市场上下文包。"],
+            "gaps": ["Stock code is missing; the market-context package cannot be located."],
         }
 
     workspace = root / "market_context_collector_scripts" / "collector_workspace"
@@ -1175,24 +1813,24 @@ def audit_market_context_layer(root: Path, target: dict[str, str], request: Rese
         gaps = list(cutoff_compatibility["reasons"])
     elif exact:
         status = "partial"
-        gaps = [f"缺少 {key}" for key in missing]
+        gaps = [f"Missing {key}" for key in missing]
         gaps.extend(cutoff_compatibility["reasons"])
         if not package_ready:
             gaps.append(
-                f"市场上下文包状态/Gate 不满足 ready_public_proxy（当前 {package_status or 'invalid'}），"
-                "不能作为可复用市场叙事代理。"
+                f"The market-context package status/gate does not satisfy ready_public_proxy (current: {package_status or 'invalid'}); "
+                "it cannot be reused as a market-narrative proxy."
             )
     elif before:
         status = "stale"
-        gaps = [f"最近可用市场上下文日期为 {before.parent.name}，早于本次 as_of_date={request.as_of_date}。"]
-        gaps.extend(f"缺少 {key}" for key in missing)
+        gaps = [f"The latest available market-context date is {before.parent.name}, earlier than as_of_date={request.as_of_date}."]
+        gaps.extend(f"Missing {key}" for key in missing)
         if not package_ready:
             gaps.append(
-                f"该历史市场上下文包状态/Gate 不满足 ready_public_proxy（当前 {package_status or 'invalid'}）。"
+                f"The historical market-context package status/gate does not satisfy ready_public_proxy (current: {package_status or 'invalid'})."
             )
     elif dated and dated.future:
         status = "future_incompatible"
-        gaps = [f"市场上下文候选目录均晚于知识截止日 {request.as_of_date}，不能用于历史基准日研究。"]
+        gaps = [f"All market-context candidate directories are later than the knowledge cutoff {request.as_of_date} and cannot be used for historical as-of-date research."]
     elif latest and dated is None:
         # 未设置知识截止日时保持既有 Gate：最新包只有完整且通过公开网页代理 Gate 才可 ready。
         if package_ready:
@@ -1200,14 +1838,14 @@ def audit_market_context_layer(root: Path, target: dict[str, str], request: Rese
             gaps = []
         else:
             status = "partial"
-            gaps = [f"缺少 {key}" for key in missing]
+            gaps = [f"Missing {key}" for key in missing]
             gaps.append(
-                f"市场上下文包状态/Gate 不满足 ready_public_proxy（当前 {package_status or 'invalid'}），"
-                "不能作为可复用市场叙事代理。"
+                f"The market-context package status/gate does not satisfy ready_public_proxy (current: {package_status or 'invalid'}); "
+                "it cannot be reused as a market-narrative proxy."
             )
     else:
         status = "missing"
-        gaps = ["未找到市场上下文包。"]
+        gaps = ["Market-context package not found."]
 
     return {
         "status": status,
@@ -1230,7 +1868,7 @@ def find_market_context_candidates(workspace: Path, stock_code: str) -> list[Pat
 
     参数：
         workspace: 市场上下文采集工作区。
-        stock_code: 股票代码。
+        stock_code: Stock code.
     返回值：
         market_context_package.json 候选路径列表。
     """
@@ -1314,27 +1952,27 @@ def build_next_actions(layers: dict[str, dict[str, Any]], request: ResearchAudit
     actions: list[dict[str, str]] = []
     collector_status = layers["collector"]["status"]
     if collector_status == "ambiguous":
-        actions.append(action("resolve_target", "main", "目标不唯一，需要明确股票代码或财报年度后再继续。"))
+        actions.append(action("resolve_target", "main", "The target is ambiguous. Specify the stock code or report year before continuing."))
         return actions
     if collector_status == "future_incompatible":
         actions.append(
             action(
                 "resolve_knowledge_cutoff",
                 "main",
-                "所选财报在知识截止日之后才披露；必须改用更早财年或调整 as_of_date，不能补跑未来产物。",
+                "The selected report was published after the knowledge cutoff. Use an earlier fiscal year or adjust as_of_date; future artifacts cannot be generated for a historical cutoff.",
             )
         )
         return actions
     if request.force_refresh:
         return [
-            action("collector_refresh", "information-collector", "用户显式要求 force_refresh=true，需要重新检查或下载财报。"),
-            action("processor_refresh", "information-processor", "用户显式要求 force_refresh=true，需要重建解析、digest、RAG 和摘要比对。"),
-            action("financial_analysis_refresh", "financial-analyst", "用户显式要求 force_refresh=true，需要重建财务分析。"),
-            action("valuation_update", "valuation-analyst", "用户显式要求 force_refresh=true，需要重新估值。"),
-            action("market_context_refresh", "market-context-collector", "用户显式要求 force_refresh=true，需要重新采集网页市场上下文。"),
+            action("collector_refresh", "information-collector", "force_refresh=true was explicitly requested; recheck or redownload the financial report."),
+            action("processor_refresh", "information-processor", "force_refresh=true was explicitly requested; rebuild parsing, digest, RAG, and summary comparison."),
+            action("financial_analysis_refresh", "financial-analyst", "force_refresh=true was explicitly requested; rebuild the financial analysis."),
+            action("valuation_update", "valuation-analyst", "force_refresh=true was explicitly requested; rerun valuation."),
+            action("market_context_refresh", "market-context-collector", "force_refresh=true was explicitly requested; recollect public-web market context."),
         ]
     if collector_status in {"missing", "partial"}:
-        actions.append(action("collector_fetch", "information-collector", "财报采集层缺少正式年报 PDF 或 manifest 记录。"))
+        actions.append(action("collector_fetch", "information-collector", "The collection layer is missing an official annual-report PDF or manifest record."))
         return actions
 
     market_context_actions = build_market_context_next_actions(layers["market_context"])
@@ -1346,16 +1984,17 @@ def build_next_actions(layers: dict[str, dict[str, Any]], request: ResearchAudit
         return actions
 
     draft_status = layers["financial_evidence_draft"]["status"]
-    if draft_status in {"missing", "partial"}:
-        actions.append(action("financial_evidence_draft", "financial-analyst", "财务证据草稿缺失或不完整，需要运行规则化证据草稿。"))
+    if draft_status in {"missing", "partial", "incompatible"}:
+        reason = "The multi-period financial evidence handoff is missing, incomplete, or does not match the selected filing set."
+        actions.append(action("financial_evidence_draft", "financial-analyst", reason))
         actions.extend(market_context_actions)
         return actions
 
     formal_status = layers["formal_financial_analysis"]["status"]
     if formal_status in {"missing", "partial", "incompatible"}:
-        reason = "正式财务分析缺失或不完整。"
+        reason = "Formal financial analysis is missing or incomplete."
         if formal_status == "incompatible":
-            reason = "已有正式财务分析与本次 depth/focus 不兼容，应复用旧产物作为底稿并补充分析。"
+            reason = "The existing formal financial analysis is incompatible with the requested depth/focus. Reuse it as a base and supplement the analysis."
         actions.append(action("financial_analysis_update", "financial-analyst", reason))
         actions.extend(market_context_actions)
         return actions
@@ -1363,12 +2002,12 @@ def build_next_actions(layers: dict[str, dict[str, Any]], request: ResearchAudit
     valuation_status = layers["valuation"]["status"]
     if valuation_status in {"missing", "partial", "stale", "incompatible", "blocked", "future_incompatible"}:
         reason_map = {
-            "missing": "估值报告缺失，需要基于已复用财务分析生成估值。",
-            "partial": "估值产物不完整，需要补齐估值报告、证据表或审计文件。",
-            "stale": "估值日期早于本次 as_of_date，只需更新估值和市场数据。",
-            "incompatible": "同日估值缺少有效历史截止证明，必须按知识截止日重新估值。",
-            "blocked": "估值层无法定位股票代码，需要先修正目标信息。",
-            "future_incompatible": "现有估值均晚于知识截止日，必须按历史基准日重新估值。",
+            "missing": "The valuation report is missing; generate valuation from the reused financial analysis.",
+            "partial": "Valuation artifacts are incomplete; complete the valuation report, evidence table, or audit file.",
+            "stale": "The valuation date is earlier than this as_of_date; update valuation and market data only.",
+            "incompatible": "The same-day valuation lacks valid historical cutoff proof and must be rerun using the knowledge cutoff.",
+            "blocked": "The valuation layer cannot locate the stock code; correct the target information first.",
+            "future_incompatible": "All existing valuations are later than the knowledge cutoff and must be rerun for the historical as-of date.",
         }
         actions.append(action("valuation_update", "valuation-analyst", reason_map[valuation_status]))
     actions.extend(market_context_actions)
@@ -1387,12 +2026,12 @@ def build_market_context_next_actions(market_context_layer: dict[str, Any]) -> l
     if market_context_status not in {"missing", "partial", "stale", "incompatible", "blocked", "future_incompatible"}:
         return []
     reason_map = {
-        "missing": "市场上下文包缺失，需要使用 Bocha Web Search 采集公开市场叙事和反方信号。",
-        "partial": "市场上下文产物不完整或仅有查询计划，需要补齐网页搜索结果、来源表和质量 Gate。",
-        "stale": "市场上下文日期早于本次 as_of_date，需要刷新热点、公司叙事和反方信号。",
-        "incompatible": "同日市场上下文缺少有效历史截止证明，需要按 as_of_date 重新采集。",
-        "blocked": "市场上下文层无法定位股票代码，需要先修正目标信息。",
-        "future_incompatible": "现有市场上下文均晚于知识截止日，必须按历史基准日重新采集。",
+        "missing": "The market-context package is missing; use Bocha Web Search to collect public market narratives and contrary signals.",
+        "partial": "Market-context artifacts are incomplete or contain only a query plan; complete web results, source table, and quality gate.",
+        "stale": "The market-context date is earlier than this as_of_date; refresh hotspots, company narratives, and contrary signals.",
+        "incompatible": "The same-day market context lacks valid historical cutoff proof and must be recollected for as_of_date.",
+        "blocked": "The market-context layer cannot locate the stock code; correct the target information first.",
+        "future_incompatible": "All existing market-context packages are later than the knowledge cutoff and must be recollected for the historical as-of date.",
     }
     return [action("market_context_update", "market-context-collector", reason_map[market_context_status])]
 
@@ -1409,17 +2048,17 @@ def build_processor_next_actions(processor_layer: dict[str, Any]) -> list[dict[s
     quality_flags = processor_layer.get("quality_flags", {})
     actions: list[dict[str, str]] = []
     if not artifacts.get("content_json", {}).get("exists"):
-        actions.append(action("processor_parse_pdf", "information-processor", "缺少 content.json，需要先解析 PDF。"))
+        actions.append(action("processor_parse_pdf", "information-processor", "content.json is missing; parse the PDF first."))
         return actions
     if not artifacts.get("llm_digest_json", {}).get("exists") or not artifacts.get("digest_audit_json", {}).get("exists"):
-        actions.append(action("processor_digest", "information-processor", "缺少 llm_digest 或 digest_audit，需要补 digest。"))
+        actions.append(action("processor_digest", "information-processor", "llm_digest or digest_audit is missing; rebuild the digest."))
     elif quality_flags.get("missing_digest_chunks") or quality_flags.get("invalid_digest_results"):
-        actions.append(action("processor_digest", "information-processor", "digest_audit 标记 chunk 缺失或无效，需要修复 digest。"))
+        actions.append(action("processor_digest", "information-processor", "digest_audit reports missing or invalid chunks; repair the digest."))
     if not artifacts.get("rag_chunks_jsonl", {}).get("exists"):
-        actions.append(action("processor_rag", "information-processor", "缺少 rag_index/rag_chunks.jsonl，只需补 RAG 索引。"))
+        actions.append(action("processor_rag", "information-processor", "rag_index/rag_chunks.jsonl is missing; build only the RAG index."))
     if not artifacts.get("summary_comparison_json", {}).get("exists"):
-        actions.append(action("processor_summary_compare", "information-processor", "缺少 summary_comparison.json，只需补摘要比对。"))
-    return actions or [action("processor_inspect", "information-processor", "处理层为 partial，但未识别出标准缺失项，需要人工检查。")]
+        actions.append(action("processor_summary_compare", "information-processor", "summary_comparison.json is missing; run only the summary comparison."))
+    return actions or [action("processor_inspect", "information-processor", "The processing layer is partial, but no standard missing item was identified; manual inspection is required.")]
 
 
 def build_skipped_actions(
@@ -1516,32 +2155,39 @@ def check_cutoff_audit(
         return {"compatible": True, "audit": {}, "reasons": []}
     reasons: list[str] = []
     audit = payload.get("cutoff_audit") if isinstance(payload, dict) else None
+    # 兼容两种等价包装：分析主报告通常把证明放在 cutoff_audit 下；独立
+    # valuation_audit.json 可以直接以审计字段作为根对象。只在根对象确实声明截止日期时
+    # 接受后一种形式，避免把普通 {status: completed} 误当成完整历史证明。
+    if not isinstance(audit, dict) and isinstance(payload, dict) and (
+        payload.get("cutoff_date") or payload.get("as_of_date") or payload.get("knowledge_cutoff")
+    ):
+        audit = payload
     if not isinstance(audit, dict):
         return {
             "compatible": False,
             "audit": {},
-            "reasons": [f"{label} 缺少 cutoff_audit，不能证明未使用知识截止日后的信息。"],
+            "reasons": [f"{label} is missing cutoff_audit, so exclusion of post-cutoff information cannot be proven."],
         }
 
     audit_date = str(
         audit.get("cutoff_date") or audit.get("as_of_date") or audit.get("knowledge_cutoff") or ""
     ).strip()
     if audit_date != cutoff_text:
-        reasons.append(f"{label} cutoff_audit 日期为 {audit_date or 'missing'}，与 as_of_date={cutoff_text} 不一致。")
+        reasons.append(f"{label} cutoff_audit date is {audit_date or 'missing'}, inconsistent with as_of_date={cutoff_text}.")
     status = str(audit.get("status") or "").strip().lower()
     compliant = audit.get("cutoff_compliant") if "cutoff_compliant" in audit else audit.get("compliant")
     if status and status not in CUTOFF_COMPLIANT_STATUSES:
-        reasons.append(f"{label} cutoff_audit.status={status} 未通过。")
+        reasons.append(f"{label} cutoff_audit.status={status} did not pass.")
     if compliant is False:
-        reasons.append(f"{label} cutoff_audit 明确标记为不 compliant。")
+        reasons.append(f"{label} cutoff_audit explicitly marks the artifact as non-compliant.")
     elif compliant is not True and status not in CUTOFF_COMPLIANT_STATUSES:
-        reasons.append(f"{label} cutoff_audit 未明确标记 compliant。")
+        reasons.append(f"{label} cutoff_audit does not explicitly mark the artifact compliant.")
     if require_strict and audit.get("strict_cutoff") is not True:
-        reasons.append(f"{label} cutoff_audit.strict_cutoff 不是 true。")
+        reasons.append(f"{label} cutoff_audit.strict_cutoff is not true.")
     if audit.get("future_fact_claim_count") not in (None, 0, "0"):
-        reasons.append(f"{label} 仍有 future 来源被事实 claim 使用。")
+        reasons.append(f"{label} still uses future sources in factual claims.")
     if audit.get("undated_fact_claim_count") not in (None, 0, "0"):
-        reasons.append(f"{label} undated_fact_claim_count 必须为 0。")
+        reasons.append(f"{label} undated_fact_claim_count must be 0.")
     return {"compatible": not reasons, "audit": audit, "reasons": reasons}
 
 
@@ -1598,17 +2244,17 @@ def check_formal_cutoff_compatibility(payload: Any, request: ResearchAuditReques
     declared_date = extract_declared_as_of_date(payload)
     if declared_date != request.as_of_date:
         reasons.append(
-            f"正式财务分析声明的 as_of_date 为 {declared_date or 'missing'}，与请求 {request.as_of_date} 不一致。"
+            f"Formal financial analysis declares as_of_date={declared_date or 'missing'}, inconsistent with requested {request.as_of_date}."
         )
     source_dates, invalid_dates = collect_source_report_dates(payload)
     cutoff = parse_strict_iso_date(request.as_of_date, "as_of_date")
     if not source_dates:
-        reasons.append("正式财务分析未提供可核验的来源财报 published_at。")
+        reasons.append("Formal financial analysis does not provide a verifiable source-report published_at.")
     if invalid_dates:
-        reasons.append("正式财务分析包含无法解析的来源财报 published_at。")
+        reasons.append("Formal financial analysis contains an unparseable source-report published_at.")
     future_dates = sorted({item.isoformat() for item in source_dates if item > cutoff})
     if future_dates:
-        reasons.append("来源财报披露日晚于知识截止日：" + ", ".join(future_dates))
+        reasons.append("Source-report publication dates later than the knowledge cutoff: " + ", ".join(future_dates))
     return {
         "compatible": not reasons,
         "reasons": reasons,
@@ -1633,10 +2279,10 @@ def check_analysis_compatibility(metadata: dict[str, Any], request: ResearchAudi
     requested_focus = parse_focus(request.focus)
     reasons: list[str] = []
     if DEPTH_RANK[existing_depth] < DEPTH_RANK[requested_depth]:
-        reasons.append(f"已有财务分析深度为 {existing_depth}，低于本次 {requested_depth}。")
+        reasons.append(f"Existing financial-analysis depth is {existing_depth}, below requested {requested_depth}.")
     if requested_focus and not requested_focus.issubset(existing_focus):
         missing_focus = sorted(requested_focus - existing_focus)
-        reasons.append("已有财务分析未覆盖本次 focus：" + ", ".join(missing_focus))
+        reasons.append("Existing financial analysis does not cover the requested focus: " + ", ".join(missing_focus))
     return {
         "compatible": not reasons,
         "existing_depth": existing_depth,
@@ -1869,19 +2515,25 @@ def default_state_output_path(root: Path, state: dict[str, Any]) -> Path:
     stock_code = _safe_state_path_component(
         target.get("stock_code") or request.get("target"), "unknown_target"
     )
-    report_year = _safe_state_path_component(
-        target.get("report_year") or request.get("report_year"), "unknown_year"
-    )
+    filing_policy = str(state.get("filing_policy") or request.get("filing_policy") or "single_filing")
+    if filing_policy == "recent_history":
+        state_scope = _safe_state_path_component(
+            state.get("knowledge_cutoff") or request.get("as_of_date"), "current"
+        )
+    else:
+        state_scope = _safe_state_path_component(
+            target.get("report_year") or request.get("report_year"), "unknown_year"
+        )
     base = (
         root
         / "research_orchestrator_scripts"
         / "orchestrator_workspace"
         / "company_state"
     ).resolve()
-    output = (base / stock_code / report_year / "research_state.json").resolve()
+    output = (base / stock_code / state_scope / "research_state.json").resolve()
     if not output.is_relative_to(base):
         # 双重防线：即使未来放宽字符集，也不能突破正式状态工作区。
-        raise ValueError(f"research_state 输出路径越界: {output}")
+        raise ValueError(f"research_state output path is outside the allowed root: {output}")
     return output
 
 
@@ -1893,19 +2545,21 @@ def build_parser() -> argparse.ArgumentParser:
     返回值：
         ArgumentParser。
     """
-    parser = argparse.ArgumentParser(description="审计单家公司研究产物复用状态，并输出续跑计划。")
-    parser.add_argument("--target", default="", help="公司名或股票代码；6 位数字会自动视作股票代码。")
-    parser.add_argument("--stock-code", default="", help="股票代码。")
-    parser.add_argument("--company-name", default="", help="公司名称。")
-    parser.add_argument("--report-year", "--fiscal-year", dest="report_year", default="", help="财报所属年度，例如 2025。")
-    parser.add_argument("--report-type", default="annual", help="财报类型，默认 annual。")
-    parser.add_argument("--depth", choices=["quick", "standard", "deep"], default="standard", help="本次研究深度。")
-    parser.add_argument("--focus", default="", help="本次研究重点，多个重点用逗号分隔。")
-    parser.add_argument("--as-of-date", default="", help="估值观察日，例如 2026-07-08。")
-    parser.add_argument("--project-root", default=str(PROJECT_ROOT), help="项目根目录，默认自动识别。")
-    parser.add_argument("--force-refresh", action="store_true", help="强制刷新所有层；默认关闭。")
-    parser.add_argument("--write-state", action="store_true", help="写入 research_state.json。")
-    parser.add_argument("--output", default="", help="显式指定 research_state.json 输出路径。")
+    parser = argparse.ArgumentParser(description="Audit reusable company-research artifacts and output a continuation plan.")
+    parser.add_argument("--target", default="", help="Company name or stock code; a six-digit number is treated as a stock code.")
+    parser.add_argument("--stock-code", default="", help="Stock code.")
+    parser.add_argument("--company-name", default="", help="Company name.")
+    parser.add_argument("--report-year", "--fiscal-year", dest="report_year", default="", help="Fiscal year of an explicitly pinned filing, e.g. 2025.")
+    parser.add_argument("--report-type", default="", help="Report type for an explicitly pinned filing. Omit it to use recent-history mode.")
+    parser.add_argument("--filing-policy", choices=["recent_history", "single_filing"], default="", help="Filing selection policy. The default is recent_history unless both report type and year are pinned.")
+    parser.add_argument("--annual-lookback", type=int, default=2, help="Number of eligible annual reports to retain in recent-history mode; default: 2.")
+    parser.add_argument("--depth", choices=["quick", "standard", "deep"], default="standard", help="Research depth.")
+    parser.add_argument("--focus", default="", help="Research focus; separate multiple topics with commas.")
+    parser.add_argument("--as-of-date", default="", help="Valuation observation date, e.g. 2026-07-08.")
+    parser.add_argument("--project-root", default=str(PROJECT_ROOT), help="Project root; detected automatically by default.")
+    parser.add_argument("--force-refresh", action="store_true", help="Force refresh all layers; disabled by default.")
+    parser.add_argument("--write-state", action="store_true", help="Write research_state.json.")
+    parser.add_argument("--output", default="", help="Explicit research_state.json output path.")
     return parser
 
 
@@ -1925,6 +2579,8 @@ def main() -> None:
         company_name=args.company_name,
         report_year=args.report_year,
         report_type=args.report_type,
+        filing_policy=args.filing_policy,
+        annual_lookback=args.annual_lookback,
         depth=args.depth,
         focus=args.focus,
         as_of_date=args.as_of_date,

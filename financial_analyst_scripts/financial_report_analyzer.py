@@ -27,48 +27,48 @@ SEVERITY_SCORE = {"critical": 5, "high": 4, "medium_high": 3.5, "medium": 3, "me
 PRIORITY_SCORE = {"S": 3, "A": 2, "B": 1, "C": 0}
 
 CORE_RAG_QUERIES = {
-    "营业收入": ["营业收入"],
-    "归母净利润": ["归属于上市公司股东的净利润", "归母净利润"],
-    "扣非归母净利润": ["扣除非经常性损益", "扣非"],
-    "经营现金流": ["经营活动产生的现金流量净额", "经营现金流"],
-    "毛利率": ["毛利率"],
+    "Revenue": ["营业收入"],
+    "Net Profit Attributable": ["归属于上市公司股东的净利润", "归母净利润"],
+    "Recurring Net Profit Attributable": ["扣除非经常性损益", "扣非"],
+    "Operating Cash Flow": ["经营活动产生的现金流量净额", "经营现金流"],
+    "Gross Margin": ["毛利率"],
     "ROE": ["加权平均净资产收益率", "ROE"],
-    "应收账款": ["应收账款"],
-    "存货": ["存货"],
-    "商誉": ["商誉"],
-    "有息负债": ["短期借款", "长期借款", "一年内到期的非流动负债", "有息负债"],
-    "审计意见": ["审计意见", "非标准审计意见", "标准无保留意见"],
-    "重大风险": ["重大诉讼", "担保", "资金占用", "关联交易", "内部控制"],
-    "分红": ["利润分配", "现金红利", "分红"],
+    "Accounts Receivable": ["应收账款"],
+    "Inventory": ["存货"],
+    "Goodwill": ["商誉"],
+    "Interest-Bearing Debt": ["短期借款", "长期借款", "一年内到期的非流动负债", "有息负债"],
+    "Audit Opinion": ["审计意见", "非标准审计意见", "标准无保留意见"],
+    "Material Risks": ["重大诉讼", "担保", "资金占用", "关联交易", "内部控制"],
+    "Dividend": ["利润分配", "现金红利", "分红"],
 }
 
 METRIC_DEFINITIONS = {
     "revenue": {
-        "label": "营业收入",
+        "label": "Revenue",
         "aliases": ["营业收入"],
         "exclude": ["扣除项目", "扣除后", "调增", "调减", "增长率门槛", "占比"],
         "ratio_metric": False,
     },
     "net_profit_attributable": {
-        "label": "归母净利润",
+        "label": "Net Profit Attributable",
         "aliases": ["归属于上市公司股东的净利润", "归母净利润"],
         "exclude": ["扣除非经常性损益", "扣非"],
         "ratio_metric": False,
     },
     "deducted_net_profit": {
-        "label": "扣非归母净利润",
+        "label": "Recurring Net Profit Attributable",
         "aliases": ["扣除非经常性损益的净利润", "扣非归母净利润", "扣除非经常性损益"],
         "exclude": ["影响金额", "非经常性损益合计"],
         "ratio_metric": False,
     },
     "gross_margin": {
-        "label": "毛利率",
+        "label": "Gross Margin",
         "aliases": ["毛利率", "综合能源服务毛利率"],
         "exclude": [],
         "ratio_metric": True,
     },
     "net_margin": {
-        "label": "净利率",
+        "label": "Net Margin",
         "aliases": ["净利率", "销售净利率"],
         "exclude": [],
         "ratio_metric": True,
@@ -80,61 +80,61 @@ METRIC_DEFINITIONS = {
         "ratio_metric": True,
     },
     "eps": {
-        "label": "基本每股收益",
+        "label": "Basic EPS",
         "aliases": ["基本每股收益"],
         "exclude": [],
         "ratio_metric": False,
     },
     "operating_cash_flow": {
-        "label": "经营活动现金流量净额",
+        "label": "Net Operating Cash Flow",
         "aliases": ["经营活动产生的现金流量净额", "经营活动现金流量净额", "经营现金流"],
         "exclude": [],
         "ratio_metric": False,
     },
     "total_assets": {
-        "label": "总资产",
+        "label": "Total Assets",
         "aliases": ["总资产", "资产总额"],
         "exclude": ["周转"],
         "ratio_metric": False,
     },
     "equity": {
-        "label": "归母净资产",
+        "label": "Equity Attributable to Shareholders",
         "aliases": ["归属于上市公司股东的净资产", "归母净资产", "净资产"],
         "exclude": ["净资产收益率"],
         "ratio_metric": False,
     },
     "interest_bearing_debt": {
-        "label": "有息负债",
+        "label": "Interest-Bearing Debt",
         "aliases": ["短期借款", "长期借款", "一年内到期的非流动负债", "应付债券", "有息负债"],
         "exclude": [],
         "ratio_metric": False,
     },
     "cash_and_cash_equivalents": {
-        "label": "货币资金",
+        "label": "Cash and Cash Equivalents",
         "aliases": ["货币资金", "现金及现金等价物余额", "现金及现金等价物"],
         "exclude": ["收到的现金"],
         "ratio_metric": False,
     },
     "accounts_receivable": {
-        "label": "应收账款",
+        "label": "Accounts Receivable",
         "aliases": ["应收账款"],
         "exclude": ["减值准备转回"],
         "ratio_metric": False,
     },
     "contract_assets": {
-        "label": "合同资产",
+        "label": "Contract Assets",
         "aliases": ["合同资产"],
         "exclude": [],
         "ratio_metric": False,
     },
     "inventory": {
-        "label": "存货",
+        "label": "Inventory",
         "aliases": ["存货"],
         "exclude": [],
         "ratio_metric": False,
     },
     "goodwill": {
-        "label": "商誉",
+        "label": "Goodwill",
         "aliases": ["商誉"],
         "exclude": ["商誉减值"],
         "ratio_metric": False,
@@ -321,8 +321,8 @@ class FinancialReportAnalyzer:
         digest_complete = bool(digest_audit.get("complete")) and bool(digest.get("complete", True))
         if not digest_complete and not allow_incomplete_digest:
             raise RuntimeError(
-                "digest_audit.complete=false 或 llm_digest.complete=false。"
-                "如需输出初步报告，请显式传入 --allow-incomplete-digest。"
+                "digest_audit.complete=false or llm_digest.complete=false. "
+                "Pass --allow-incomplete-digest explicitly to generate a preliminary report."
             )
 
         metadata = digest.get("document_metadata", {}) or {}
@@ -414,7 +414,7 @@ class FinancialReportAnalyzer:
         required_paths = [paths.digest_json, paths.digest_audit, paths.rag_chunks]
         missing_paths = [str(path) for path in required_paths if not path.exists()]
         if missing_paths:
-            raise FileNotFoundError("财务分析员必需输入缺失：" + "；".join(missing_paths))
+            raise FileNotFoundError("Required financial-analyst inputs are missing: " + "；".join(missing_paths))
         return paths
 
     def default_output_dir(self, metadata: dict[str, Any]) -> Path:
@@ -455,17 +455,17 @@ class FinancialReportAnalyzer:
         invalid_results = digest_audit.get("invalid_results", []) or []
         limitations: list[str] = []
         if missing_chunks:
-            limitations.append(f"digest 存在 {len(missing_chunks)} 个缺失 chunk，报告只能作为初步分析。")
+            limitations.append(f"The digest has {len(missing_chunks)} missing chunks; the report can be used only as a preliminary analysis.")
         if invalid_results:
-            limitations.append(f"digest 存在 {len(invalid_results)} 个无效结果，需回到信息处理员复核。")
+            limitations.append(f"The digest has {len(invalid_results)} invalid results and requires information-processor review.")
         if not rag_chunks:
-            limitations.append("RAG 证据索引为空，关键数字无法完成证据层核验。")
+            limitations.append("The RAG evidence index is empty, so key figures cannot be verified at the evidence layer.")
         digest_number_coverage = coverage.get("digest_number_coverage")
         rag_number_coverage = coverage.get("rag_number_coverage")
         if isinstance(digest_number_coverage, (int, float)) and digest_number_coverage < 0.8:
-            limitations.append("摘要代表性数字在 digest 中覆盖不足 80%，部分数字需依赖 RAG 或回到 content.json 复核。")
+            limitations.append("Representative summary figures have less than 80% digest coverage; some figures require RAG or content.json verification.")
         if isinstance(rag_number_coverage, (int, float)) and rag_number_coverage < 0.9:
-            limitations.append("摘要代表性数字在 RAG 中覆盖不足 90%，建议信息处理员复核 RAG 构建结果。")
+            limitations.append("Representative summary figures have less than 90% RAG coverage; the information processor should review the RAG build.")
 
         input_quality = "high"
         if missing_chunks or invalid_results or not rag_chunks:
@@ -530,7 +530,7 @@ class FinancialReportAnalyzer:
         business_findings = select_findings(findings, BUSINESS_KEYWORDS, limit=6)
         source_refs = [ref_from_finding(finding, ref_builder) for finding in business_findings[:4]]
         return {
-            "main_business": summarize_findings(business_findings, "当前 digest 未抽取到足够清晰的主营业务描述。", max_items=3),
+            "main_business": summarize_findings(business_findings, "The current digest does not contain a sufficiently clear description of the main business.", max_items=3),
             "revenue_drivers": bullet_summaries(select_findings(findings, ["收入结构", "营业收入", "产品", "地区"], limit=4)),
             "industry_context": bullet_summaries(select_findings(findings, ["行业", "市场需求", "竞争", "电力", "新能源"], limit=4)),
             "business_model_notes": bullet_summaries(select_findings(findings, ["EPC", "EPCOS", "业务模式", "综合能源"], limit=4)),
@@ -649,7 +649,7 @@ class FinancialReportAnalyzer:
                 "status": status,
                 "digest_refs": metric.get("source_refs", []),
                 "rag_refs": rag_refs,
-                "notes": "RAG 命中核心指标或同页表格。" if status == "verified" else "当前 RAG 未检索到该指标的直接证据，不代表财报没有披露；需要回到 content.json 或原始 PDF 进一步复核。",
+                "notes": "RAG matched the core metric or a table on the same page." if status == "verified" else "RAG did not retrieve direct evidence for this metric. This does not mean the filing omitted it; verify against content.json or the original PDF.",
             }
             checked_items.append(item)
             if status != "verified":
@@ -669,7 +669,7 @@ class FinancialReportAnalyzer:
                 "status": status,
                 "digest_refs": digest_refs,
                 "rag_refs": rag_refs,
-                "notes": "RAG 命中相关证据。" if status == "verified" else "当前 RAG 未检索到该事项的直接证据，需要补证。",
+                "notes": "RAG matched relevant evidence." if status == "verified" else "RAG did not retrieve direct evidence for this item; additional evidence is required.",
             }
             checked_items.append(item)
             if status != "verified":
@@ -781,29 +781,29 @@ class FinancialReportAnalyzer:
         key_reasons: list[str] = []
         if revenue_yoy is not None and revenue_yoy < -20:
             negative_points += 2
-            key_reasons.append(f"营业收入同比明显下降（{format_number_for_reason(revenue_yoy, '%')}）。")
+            key_reasons.append(f"Revenue declined materially year over year ({format_number_for_reason(revenue_yoy, '%')}).")
         if net_profit is not None and net_profit < 0:
             negative_points += 2
-            key_reasons.append("归母净利润为负，盈利能力由盈转亏或处于亏损状态。")
+            key_reasons.append("Net profit attributable to shareholders is negative, indicating a loss or a shift from profit to loss.")
         if deducted_profit is not None and deducted_profit < 0:
             negative_points += 1
-            key_reasons.append("扣非归母净利润为负，主营盈利质量承压。")
+            key_reasons.append("Recurring net profit attributable to shareholders is negative, indicating pressure on core earnings quality.")
         if ocf is not None and ocf > 0:
-            key_reasons.append("经营现金流仍为正，对亏损形成一定缓冲。")
+            key_reasons.append("Operating cash flow remains positive and provides some buffer against the loss.")
         if ocf_yoy is not None and ocf_yoy < -40:
             negative_points += 1
-            key_reasons.append(f"经营现金流同比大幅下降（{format_number_for_reason(ocf_yoy, '%')}），回款或经营周转质量需继续跟踪。")
+            key_reasons.append(f"Operating cash flow declined materially year over year ({format_number_for_reason(ocf_yoy, '%')}); collections and working-capital quality require continued monitoring.")
         if "会计差错" in all_text or "追溯调整" in all_text:
             negative_points += 1
-            key_reasons.append("存在前期会计差错更正或追溯调整，收入确认和历史口径可比性需要重点复核。")
+            key_reasons.append("Prior-period accounting corrections or retrospective adjustments exist; revenue recognition and historical comparability require focused review.")
         if any(keyword in risk_text for keyword in ["高", "high", "应收", "合同资产", "减值"]):
             negative_points += 1
-            key_reasons.append("应收、合同资产或减值相关风险被 digest 标记，需要关注资产质量。")
+            key_reasons.append("The digest flags receivables, contract assets, or impairment risks; asset quality requires attention.")
 
         severe_risk_count = len([finding for finding in material_risks if SEVERITY_SCORE.get(finding.severity, 0) >= 4])
         if severe_risk_count >= 3:
             negative_points += 1
-            key_reasons.append(f"digest 中存在 {severe_risk_count} 项高等级风险。")
+            key_reasons.append(f"The digest contains {severe_risk_count} high-severity risks.")
 
         if negative_points >= 6:
             fundamental_rating = "strong_negative"
@@ -824,7 +824,7 @@ class FinancialReportAnalyzer:
 
         if has_actual_nonstandard_audit_signal(all_text):
             risk_rating = max_rating(risk_rating, "high")
-            key_reasons.append("文本中出现可能实际影响审计或内控意见的非标准表述，需确认原文语境。")
+            key_reasons.append("The text contains non-standard wording that may affect the audit or internal-control opinion; confirm the original context.")
 
         verified_total = int((evidence_check.get("summary") or {}).get("verified_total") or 0)
         checked_total = int((evidence_check.get("summary") or {}).get("checked_total") or 0)
@@ -866,51 +866,51 @@ class FinancialReportAnalyzer:
         if input_audit.get("limitations"):
             questions.append(
                 {
-                    "question": "摘要代表性数字在 digest 中覆盖不足的项目是否会影响核心财务判断？",
-                    "why_it_matters": "digest 是财务分析员主输入，覆盖不足会降低自动结论置信度。",
-                    "suggested_evidence": "请信息处理员列出 summary_comparison.json 中 missing_in_digest 的高价值数字，并说明是否已被 RAG 覆盖。",
+                    "question": "Could representative figures missing from the digest affect the core financial conclusions?",
+                    "why_it_matters": "The digest is a primary financial-analysis input; insufficient coverage lowers confidence in automated conclusions.",
+                    "suggested_evidence": "Ask the information processor to list high-value missing_in_digest figures in summary_comparison.json and state whether RAG covers them.",
                 }
             )
         if metric_yoy_float(metrics.get("revenue", {})) is not None and metric_yoy_float(metrics.get("revenue", {})) < -20:
             questions.append(
                 {
-                    "question": "营业收入大幅下降是否已经在 2026 年一季报或在手订单中出现修复迹象？",
-                    "why_it_matters": "收入下滑持续性决定公司是周期低谷、短期扰动还是基本面恶化。",
-                    "suggested_evidence": "后续补充季度报告、订单公告、管理层对需求和竞争格局的解释。",
+                    "question": "Did the material revenue decline show signs of recovery in the 2026 Q1 report or order backlog?",
+                    "why_it_matters": "The persistence of the revenue decline determines whether this is a cyclical trough, temporary disruption, or fundamental deterioration.",
+                    "suggested_evidence": "Add quarterly reports, order announcements, and management commentary on demand and competition.",
                 }
             )
         if metric_current_float(metrics.get("net_profit_attributable", {})) is not None and metric_current_float(metrics.get("net_profit_attributable", {})) < 0:
             questions.append(
                 {
-                    "question": "当期亏损中有多少来自一次性减值或非经常性项目，多少来自主营毛利和费用压力？",
-                    "why_it_matters": "亏损性质决定是否具备困境反转研究价值。",
-                    "suggested_evidence": "补充资产减值明细、信用减值明细、分产品毛利率和管理层变动原因。",
+                    "question": "How much of the current loss comes from one-off impairment or non-recurring items versus core gross-margin and expense pressure?",
+                    "why_it_matters": "The nature of the loss determines whether a turnaround thesis is researchable.",
+                    "suggested_evidence": "Add asset-impairment details, credit-impairment details, product-level gross margins, and management explanations for changes.",
                 }
             )
         all_text = json.dumps([asdict(finding) for finding in findings], ensure_ascii=False)
         if "会计差错" in all_text or "追溯调整" in all_text:
             questions.append(
                 {
-                    "question": "前期会计差错更正是否已经完成整改，是否存在监管问询或持续收入确认争议？",
-                    "why_it_matters": "会计差错会影响历史可比性、收入确认质量和治理风险评级。",
-                    "suggested_evidence": "补充会计差错更正专项说明、审计师说明、监管问询函及回复。",
+                    "question": "Have prior-period accounting corrections been remediated, and are there regulatory inquiries or continuing revenue-recognition disputes?",
+                    "why_it_matters": "Accounting errors affect historical comparability, revenue-recognition quality, and governance risk assessment.",
+                    "suggested_evidence": "Add special correction statements, auditor explanations, regulatory inquiry letters, and responses.",
                 }
             )
         if any(keyword in all_text for keyword in ["应收账款", "合同资产", "回款", "减值"]):
             questions.append(
                 {
-                    "question": "应收账款和合同资产的账龄、客户集中度、期后回款和减值计提是否充分？",
-                    "why_it_matters": "该问题直接影响利润质量、现金流质量和资产负债表风险。",
-                    "suggested_evidence": "补充应收账款账龄表、坏账准备计提表、合同资产明细和期后回款数据。",
+                    "question": "Are aging, customer concentration, subsequent collections, and impairment allowances for receivables and contract assets adequate?",
+                    "why_it_matters": "This directly affects earnings quality, cash-flow quality, and balance-sheet risk.",
+                    "suggested_evidence": "Add receivables aging, bad-debt allowance schedules, contract-asset details, and subsequent collection data.",
                 }
             )
         if focus:
             questions.insert(
                 0,
                 {
-                    "question": f"用户指定重点方向 {focus} 是否需要专项追证？",
-                    "why_it_matters": "专项分析可以避免通用报告遗漏用户真正关注的投资变量。",
-                    "suggested_evidence": "围绕 focus 参数定向检索 RAG，并必要时要求信息处理员回到 content.json 复核。",
+                    "question": f"Does the user-specified focus {focus} require targeted evidence?",
+                    "why_it_matters": "Targeted analysis prevents a generic report from missing the investment variables the user actually cares about.",
+                    "suggested_evidence": "Search RAG specifically for the focus parameter and ask the information processor to verify content.json when necessary.",
                 },
             )
         return dedupe_question_list(questions)[:8]
@@ -937,14 +937,14 @@ class FinancialReportAnalyzer:
                 {
                     "request_id": f"REQ-{datetime.now().strftime('%Y%m%d')}-0001",
                     "to_agent": "information_processor",
-                    "request_type": "重跑或补证",
+                    "request_type": "Rerun or Add Evidence",
                     "priority": "high",
                     "blocking": True,
                     "status": "suggested",
                     "company": build_company_payload(metadata),
-                    "question": "digest 存在缺失或无效 chunk，请补齐后重新生成 llm_digest。",
-                    "why_it_matters": "digest 不完整会降低财务分析员结论可靠性。",
-                    "impact_on_analysis": "当前报告只能作为低置信初步分析。",
+                    "question": "The digest has missing or invalid chunks. Complete them and regenerate llm_digest.",
+                    "why_it_matters": "An incomplete digest reduces the reliability of financial-analysis conclusions.",
+                    "impact_on_analysis": "The current report can be used only as a low-confidence preliminary analysis.",
                 }
             )
         elif input_audit.get("input_quality") == "medium" and open_questions:
@@ -952,14 +952,14 @@ class FinancialReportAnalyzer:
                 {
                     "request_id": f"REQ-{datetime.now().strftime('%Y%m%d')}-0001",
                     "to_agent": "information_processor",
-                    "request_type": "非阻塞补证",
+                    "request_type": "Non-Blocking Evidence Request",
                     "priority": "medium",
                     "blocking": False,
                     "status": "suggested",
                     "company": build_company_payload(metadata),
                     "question": open_questions[0]["question"],
                     "why_it_matters": open_questions[0]["why_it_matters"],
-                    "impact_on_analysis": "RAG 覆盖较好，因此不阻塞本轮报告，但补证可提高后续版本置信度。",
+                    "impact_on_analysis": "RAG coverage is adequate, so this does not block the current report, but more evidence can improve confidence in later versions.",
                 }
             )
         return requests
@@ -992,45 +992,45 @@ class FinancialReportAnalyzer:
         if fundamental_rating in {"negative", "strong_negative"}:
             signals.append(
                 {
-                    "signal_type": "基本面压力",
+                    "signal_type": "Fundamental Pressure",
                     "direction": "negative",
-                    "reason": "收入下滑、利润亏损或高等级风险集中出现，下游决策员应先验证修复证据。",
+                    "reason": "Revenue decline, losses, or concentrated high-severity risks are present; downstream decision-makers should verify recovery evidence first.",
                     "source_refs": refs_from_findings(select_findings(findings, ["营业收入", "净利润", "亏损"], limit=2), ref_builder),
                 }
             )
         if net_profit is not None and net_profit < 0:
             signals.append(
                 {
-                    "signal_type": "盈利质量",
+                    "signal_type": "Earnings Quality",
                     "direction": "negative",
-                    "reason": "归母净利润为负，不适合作为稳定盈利型标的直接筛入。",
+                    "reason": "Net profit attributable to shareholders is negative; the company should not be screened directly as a stable-earnings candidate.",
                     "source_refs": metrics.get("net_profit_attributable", {}).get("source_refs", []),
                 }
             )
         if revenue_yoy is not None and revenue_yoy < -20:
             signals.append(
                 {
-                    "signal_type": "成长性",
+                    "signal_type": "Growth",
                     "direction": "negative",
-                    "reason": "营业收入同比明显下降，成长型决策员需要等待收入修复或订单验证。",
+                    "reason": "Revenue declined materially year over year; growth-oriented decision-makers should wait for revenue recovery or order validation.",
                     "source_refs": metrics.get("revenue", {}).get("source_refs", []),
                 }
             )
         if "不派发现金红利" in dividend_text or "不分配" in dividend_text:
             signals.append(
                 {
-                    "signal_type": "分红",
+                    "signal_type": "Dividend",
                     "direction": "negative",
-                    "reason": "报告期利润分配方案为不派发现金红利，不适合作为分红现金流型标的。",
+                    "reason": "The reporting-period distribution plan pays no cash dividend, so the company is unsuitable as a dividend-cash-flow candidate.",
                     "source_refs": refs_from_findings(select_findings(findings, ["利润分配", "现金红利"], limit=2), ref_builder),
                 }
             )
         if risk_rating in {"medium_high", "high", "critical"}:
             signals.append(
                 {
-                    "signal_type": "风险偏好",
+                    "signal_type": "Risk Preference",
                     "direction": "negative",
-                    "reason": "风险等级偏高，风险厌恶型决策员应默认规避或要求更强补证。",
+                    "reason": "Risk is elevated; risk-averse decision-makers should avoid by default or require stronger evidence.",
                     "source_refs": refs_from_findings([finding for finding in findings if finding.item_type == "risk" and not is_non_material_risk_disclosure(finding.topic, finding.summary)][:3], ref_builder),
                 }
             )
@@ -1100,7 +1100,7 @@ def flatten_digest_findings(digest: dict[str, Any]) -> list[DigestFinding]:
             findings.append(
                 DigestFinding(
                     item_type="finding",
-                    topic=str(finding.get("topic") or "未命名发现"),
+                    topic=str(finding.get("topic") or "Unnamed Finding"),
                     summary=normalize_space(str(finding.get("summary") or "")),
                     numbers=list(finding.get("numbers") or []),
                     pages=source_pages,
@@ -1110,7 +1110,7 @@ def flatten_digest_findings(digest: dict[str, Any]) -> list[DigestFinding]:
             )
         for risk in result.get("risks", []) or []:
             source_pages = normalize_pages(risk.get("source_pages") or pages)
-            risk_type = str(risk.get("risk_type") or "未命名风险")
+            risk_type = str(risk.get("risk_type") or "Unnamed Risk")
             risk_summary = normalize_space(str(risk.get("summary") or ""))
             if is_non_material_risk_disclosure(risk_type, risk_summary):
                 continue
@@ -1652,12 +1652,20 @@ def build_company_payload(metadata: dict[str, Any]) -> dict[str, Any]:
     返回值：
         公司信息字典。
     """
+    report_year = str(metadata.get("report_year") or "")
+    report_type = str(metadata.get("report_type") or "")
+    period_labels = {
+        "annual": f"Fiscal Year {report_year}",
+        "q1": f"{report_year} First Quarter (3M cumulative)",
+        "semiannual": f"{report_year} First Half (6M cumulative)",
+        "q3": f"{report_year} First Nine Months (9M cumulative)",
+    }
     return {
         "stock_code": str(metadata.get("stock_code") or ""),
         "company_name": str(metadata.get("company_name") or ""),
-        "report_year": str(metadata.get("report_year") or ""),
-        "report_type": str(metadata.get("report_type") or ""),
-        "report_period": f"{metadata.get('report_year', '')} 年度" if metadata.get("report_year") else "",
+        "report_year": report_year,
+        "report_type": report_type,
+        "report_period": period_labels.get(report_type, report_year),
         "pdf_stem": str(metadata.get("pdf_stem") or ""),
         "announcement_id": str(metadata.get("announcement_id") or ""),
         "published_at": str(metadata.get("published_at") or ""),
@@ -1679,8 +1687,8 @@ def build_overall_view(ratings: dict[str, Any], metrics: dict[str, Any], finding
     net_profit = metrics.get("net_profit_attributable", {})
     ocf = metrics.get("operating_cash_flow", {})
     parts = [
-        f"基本面评级为 {ratings.get('fundamental_rating')}，财务质量评级为 {ratings.get('financial_quality_rating')}，风险评级为 {ratings.get('risk_rating')}。",
-        f"营业收入 {metric_brief(revenue)}；归母净利润 {metric_brief(net_profit)}；经营现金流 {metric_brief(ocf)}。",
+        f"Fundamental rating: {ratings.get('fundamental_rating')}; financial quality rating: {ratings.get('financial_quality_rating')}; risk rating: {ratings.get('risk_rating')}.",
+        f"Revenue {metric_brief(revenue)}; net profit attributable to shareholders {metric_brief(net_profit)}; operating cash flow {metric_brief(ocf)}.",
     ]
     high_risks = [
         finding
@@ -1690,7 +1698,7 @@ def build_overall_view(ratings: dict[str, Any], metrics: dict[str, Any], finding
         and not is_non_material_risk_disclosure(finding.topic, finding.summary)
     ]
     if high_risks:
-        parts.append("主要压力来自：" + "；".join(finding.topic for finding in high_risks[:4]) + "。")
+        parts.append("Primary pressure comes from: " + "；".join(finding.topic for finding in high_risks[:4]) + "。")
     return "".join(parts)
 
 
@@ -1708,12 +1716,12 @@ def build_profitability_view(metrics: dict[str, Any], findings: list[DigestFindi
     net_profit = metric_current_float(metrics.get("net_profit_attributable", {}))
     deducted_profit = metric_current_float(metrics.get("deducted_net_profit", {}))
     if net_profit is not None and net_profit < 0:
-        return "公司报告期归母净利润为负，扣非利润亦需重点关注，盈利能力处于明显承压状态；收入下降和毛利率/减值因素共同影响利润表现。"
+        return "Net profit attributable to shareholders is negative, and recurring profit also requires close attention. Earnings are under material pressure, with revenue decline, gross margin, and impairment jointly affecting performance."
     if revenue_yoy is not None and revenue_yoy < 0:
-        return "公司收入同比下降，盈利能力需要结合毛利率、费用率和减值损失进一步拆解。"
+        return "Revenue declined year over year; profitability requires further decomposition across gross margin, expense ratios, and impairment losses."
     if deducted_profit is not None and deducted_profit > 0:
-        return "公司扣非利润仍为正，盈利质量需继续结合现金流和资产质量确认。"
-    return summarize_findings(findings, "当前 digest 未提供足够完整的盈利能力证据。", max_items=2)
+        return "Recurring profit remains positive, but earnings quality still requires confirmation through cash flow and asset quality."
+    return summarize_findings(findings, "The current digest does not provide sufficiently complete profitability evidence.", max_items=2)
 
 
 def build_growth_view(metrics: dict[str, Any], findings: list[DigestFinding]) -> str:
@@ -1728,10 +1736,10 @@ def build_growth_view(metrics: dict[str, Any], findings: list[DigestFinding]) ->
     """
     revenue_yoy = metric_yoy_float(metrics.get("revenue", {}))
     if revenue_yoy is not None and revenue_yoy < -20:
-        return "营业收入同比大幅下降，当前不是高质量增长状态；需要验证下滑来自行业需求、竞争加剧、项目节奏还是公司竞争力弱化。"
+        return "Revenue declined materially year over year, so the company is not currently in a high-quality growth state. Determine whether the decline reflects industry demand, stronger competition, project timing, or weakening competitiveness."
     if revenue_yoy is not None and revenue_yoy > 10:
-        return "营业收入保持较快增长，但仍需确认增长是否伴随现金流和应收质量同步改善。"
-    return summarize_findings(findings, "增长质量证据不足，需要多期数据和订单信息补充。", max_items=2)
+        return "Revenue is growing rapidly, but confirm whether cash flow and receivables quality are improving in parallel."
+    return summarize_findings(findings, "Growth-quality evidence is insufficient; add multi-period data and order information.", max_items=2)
 
 
 def build_cashflow_view(metrics: dict[str, Any], findings: list[DigestFinding]) -> str:
@@ -1749,11 +1757,11 @@ def build_cashflow_view(metrics: dict[str, Any], findings: list[DigestFinding]) 
     net_profit = metric_current_float(metrics.get("net_profit_attributable", {}))
     if ocf is not None and net_profit is not None and ocf > 0 > net_profit:
         if ocf_yoy is not None and ocf_yoy < -40:
-            return "经营现金流仍为正且好于亏损利润，但同比大幅下降，说明现金流没有彻底失控但质量边际明显走弱。"
-        return "经营现金流为正且好于亏损利润，对利润下滑形成一定缓冲。"
+            return "Operating cash flow remains positive and exceeds loss-making earnings, but declined materially year over year. Cash flow is not out of control, although its quality has weakened significantly at the margin."
+        return "Operating cash flow is positive and stronger than loss-making earnings, providing some buffer against the profit decline."
     if ocf is not None and ocf < 0:
-        return "经营现金流为负，利润和现金转化质量存在明显红旗。"
-    return summarize_findings(findings, "现金流证据不足，需要补充经营现金流变动原因和回款结构。", max_items=2)
+        return "Operating cash flow is negative, creating a clear red flag for earnings-to-cash conversion quality."
+    return summarize_findings(findings, "Cash-flow evidence is insufficient; add drivers of operating cash-flow changes and the collection structure.", max_items=2)
 
 
 def build_balance_sheet_view(metrics: dict[str, Any], findings: list[DigestFinding]) -> str:
@@ -1772,8 +1780,8 @@ def build_balance_sheet_view(metrics: dict[str, Any], findings: list[DigestFindi
         if keyword in text:
             flags.append(keyword)
     if flags:
-        return "资产负债表需要重点跟踪 " + "、".join(deduplicate(flags)[:6]) + " 等科目，尤其要复核回款、减值计提和真实流动性。"
-    return "当前 digest 未显示足够多资产负债表异常证据，但仍需用 RAG 核验应收、存货、商誉和有息负债。"
+        return "The balance sheet requires close monitoring of " + "、".join(deduplicate(flags)[:6]) + ", with particular attention to collections, impairment allowances, and true liquidity."
+    return "The current digest does not show sufficient evidence of balance-sheet anomalies, but receivables, inventory, goodwill, and interest-bearing debt still require RAG verification."
 
 
 def build_capital_allocation_view(findings: list[DigestFinding]) -> str:
@@ -1787,10 +1795,10 @@ def build_capital_allocation_view(findings: list[DigestFinding]) -> str:
     """
     text = json.dumps([asdict(finding) for finding in findings], ensure_ascii=False)
     if "不派发现金红利" in text or "不分配" in text:
-        return "公司报告期利润分配方案为不派发现金红利、不送红股、不转增，资本回报信号偏弱，需要结合亏损和现金流压力理解。"
+        return "The reporting-period distribution plan pays no cash dividend, issues no bonus shares, and makes no capital conversion. The capital-return signal is weak and should be interpreted alongside losses and cash-flow pressure."
     if findings:
-        return summarize_findings(findings, "资本配置信息有限。", max_items=2)
-    return "当前 digest 未抽取到足够完整的分红、回购、融资和资本开支信息。"
+        return summarize_findings(findings, "Capital-allocation information is limited.", max_items=2)
+    return "The current digest does not contain sufficiently complete information on dividends, buybacks, financing, and capital expenditure."
 
 
 def build_governance_view(findings: list[DigestFinding]) -> str:
@@ -1804,10 +1812,10 @@ def build_governance_view(findings: list[DigestFinding]) -> str:
     """
     text = json.dumps([asdict(finding) for finding in findings], ensure_ascii=False)
     if "会计差错" in text or "追溯调整" in text:
-        return "治理和审计层面最需要关注前期会计差错更正及追溯调整，这会影响收入确认口径、历史可比性和财务报告质量判断。"
+        return "Governance and audit analysis should focus on prior-period accounting corrections and retrospective adjustments, which affect revenue recognition, historical comparability, and financial-reporting quality."
     if "标准无保留" in text and "内部控制重大缺陷" not in text:
-        return "审计与内控表述未显示重大异常，但仍需结合关键审计事项和会计估计判断财报质量。"
-    return summarize_findings(findings, "治理与审计信息不足，需要补充审计意见、关键审计事项和内控评价。", max_items=2)
+        return "Audit and internal-control disclosures show no major anomaly, but reporting quality still requires assessment against key audit matters and accounting estimates."
+    return summarize_findings(findings, "Governance and audit information is insufficient; add the audit opinion, key audit matters, and internal-control assessment.", max_items=2)
 
 
 def infer_audit_opinion(findings: list[DigestFinding]) -> str | None:
@@ -1821,11 +1829,11 @@ def infer_audit_opinion(findings: list[DigestFinding]) -> str | None:
     """
     text = json.dumps([asdict(finding) for finding in findings], ensure_ascii=False)
     if "标准无保留" in text:
-        return "标准无保留意见"
+        return "Standard unqualified opinion"
     if "不存在非标准审计意见" in text or "未涉及非标准审计意见" in text:
-        return "未发现非标准审计意见"
+        return "No non-standard audit opinion identified"
     if "非标准审计意见" in text:
-        return "出现非标准审计意见相关表述，需回到审计报告原文确认"
+        return "Wording related to a non-standard audit opinion appears; confirm against the original audit report"
     return None
 
 
@@ -1840,9 +1848,9 @@ def infer_internal_control(findings: list[DigestFinding]) -> str | None:
     """
     text = json.dumps([asdict(finding) for finding in findings], ensure_ascii=False)
     if "未发现内部控制重大缺陷" in text:
-        return "报告期内未发现内部控制重大缺陷"
+        return "No material internal-control weakness identified during the reporting period"
     if "内部控制重大缺陷" in text:
-        return "出现内部控制重大缺陷相关表述，需复核原文语境"
+        return "Wording related to a material internal-control weakness appears; review the original context"
     return None
 
 
@@ -1861,25 +1869,25 @@ def render_analyst_markdown(report: dict[str, Any]) -> str:
     metrics = report.get("financial_metrics", {})
     sections = report.get("analysis_sections", {})
     lines: list[str] = []
-    title_prefix = "财务分析证据草稿"
+    title_prefix = "Financial Analysis Evidence Draft"
     if audit.get("input_quality") != "high":
-        title_prefix = "财务分析证据草稿（含输入限制）"
+        title_prefix = "Financial Analysis Evidence Draft (Input Limitations Apply)"
     lines.append(f"# {title_prefix}：{company.get('stock_code', '')} {company.get('company_name', '')} {company.get('report_period', '')}")
     lines.append("")
-    lines.append("> 本文件由规则脚本基于信息处理员 digest 与 RAG 证据生成，只是给 LLM 财务分析 Agent 复核使用的证据草稿，不是正式研究结论，也不构成证券投资建议。")
+    lines.append("> This rule-based file is generated from the information-processor digest and RAG evidence for LLM financial-analyst review. It is an evidence draft, not a formal research conclusion or investment advice.")
     lines.append("")
-    lines.append("## 1. 结论摘要")
+    lines.append("## 1. Executive Summary")
     lines.append("")
-    lines.append(f"- 总体观点：{summary.get('overall_view', '')}")
-    lines.append(f"- 基本面评级：{summary.get('fundamental_rating', '')}")
-    lines.append(f"- 财务质量评级：{summary.get('financial_quality_rating', '')}")
-    lines.append(f"- 风险评级：{summary.get('risk_rating', '')}")
-    lines.append(f"- 置信度：{summary.get('confidence', '')}")
-    lines.append("- 核心理由：")
+    lines.append(f"- Overall view: {summary.get('overall_view', '')}")
+    lines.append(f"- Fundamental rating: {summary.get('fundamental_rating', '')}")
+    lines.append(f"- Financial quality rating: {summary.get('financial_quality_rating', '')}")
+    lines.append(f"- Risk rating: {summary.get('risk_rating', '')}")
+    lines.append(f"- Confidence: {summary.get('confidence', '')}")
+    lines.append("- Core reasons:")
     for reason in summary.get("key_reasons", []) or []:
         lines.append(f"  - {reason}")
     lines.append("")
-    lines.append("## 2. 输入质量与审计状态")
+    lines.append("## 2. Input Quality and Audit Status")
     lines.append("")
     lines.append(f"- digest_complete：{audit.get('digest_complete')}")
     lines.append(f"- input_quality：{audit.get('input_quality')}")
@@ -1888,19 +1896,19 @@ def render_analyst_markdown(report: dict[str, Any]) -> str:
     lines.append(f"- rag_keyword_coverage：{audit.get('rag_keyword_coverage')}")
     lines.append(f"- rag_number_coverage：{audit.get('rag_number_coverage')}")
     for limitation in audit.get("limitations", []) or []:
-        lines.append(f"- 限制：{limitation}")
+        lines.append(f"- Limitation: {limitation}")
     lines.append("")
-    lines.append("## 3. 公司业务与收入来源")
+    lines.append("## 3. Business and Revenue Sources")
     lines.append("")
     business = report.get("business_profile", {})
     lines.append(str(business.get("main_business", "")))
-    append_bullets(lines, "收入驱动", business.get("revenue_drivers", []))
-    append_bullets(lines, "行业背景", business.get("industry_context", []))
-    append_bullets(lines, "业务模式", business.get("business_model_notes", []))
+    append_bullets(lines, "Revenue Drivers", business.get("revenue_drivers", []))
+    append_bullets(lines, "Industry Context", business.get("industry_context", []))
+    append_bullets(lines, "Business Model", business.get("business_model_notes", []))
     lines.append("")
-    lines.append("## 4. 核心财务指标总览")
+    lines.append("## 4. Core Financial Metrics")
     lines.append("")
-    lines.append("| 指标 | 当前值 | 上期值 | 同比/变动 | 证据 |")
+    lines.append("| Metric | Current | Prior | YoY / Change | Evidence |")
     lines.append("|---|---:|---:|---:|---|")
     for key in ["revenue", "net_profit_attributable", "deducted_net_profit", "gross_margin", "roe", "eps", "operating_cash_flow", "total_assets", "equity", "cash_and_cash_equivalents", "accounts_receivable", "contract_assets", "inventory", "goodwill", "interest_bearing_debt"]:
         metric = metrics.get(key, {}) or {}
@@ -1918,12 +1926,12 @@ def render_analyst_markdown(report: dict[str, Any]) -> str:
             + " |"
         )
     section_titles = [
-        ("## 5. 盈利能力分析", "profitability"),
-        ("## 6. 增长质量分析", "growth_quality"),
-        ("## 7. 现金流质量分析", "cash_flow_quality"),
-        ("## 8. 资产负债表质量分析", "balance_sheet_quality"),
-        ("## 9. 资本配置分析", "capital_allocation"),
-        ("## 10. 审计、治理与合规风险", "governance_and_audit"),
+        ("## 5. Profitability Analysis", "profitability"),
+        ("## 6. Growth Quality Analysis", "growth_quality"),
+        ("## 7. Cash-Flow Quality Analysis", "cash_flow_quality"),
+        ("## 8. Balance-Sheet Quality Analysis", "balance_sheet_quality"),
+        ("## 9. Capital Allocation Analysis", "capital_allocation"),
+        ("## 10. Audit, Governance, and Compliance Risk", "governance_and_audit"),
     ]
     for title, key in section_titles:
         lines.append("")
@@ -1932,55 +1940,55 @@ def render_analyst_markdown(report: dict[str, Any]) -> str:
         section = sections.get(key, {}) or {}
         lines.append(str(section.get("view", "")))
         if section.get("positive_factors"):
-            append_bullets(lines, "正面因素", section.get("positive_factors", []))
+            append_bullets(lines, "Positive Factors", section.get("positive_factors", []))
         if section.get("negative_factors"):
-            append_bullets(lines, "负面因素", section.get("negative_factors", []))
+            append_bullets(lines, "Negative Factors", section.get("negative_factors", []))
         if section.get("red_flags"):
-            append_bullets(lines, "红旗事项", section.get("red_flags", []))
+            append_bullets(lines, "Red Flags", section.get("red_flags", []))
         if key == "capital_allocation":
             for field in ["dividend", "buyback", "financing", "capex"]:
                 if section.get(field):
                     lines.append(f"- {field}: {section.get(field)}")
         if key == "governance_and_audit":
-            lines.append(f"- 审计意见：{section.get('audit_opinion')}")
-            lines.append(f"- 内部控制：{section.get('internal_control')}")
+            lines.append(f"- Audit opinion: {section.get('audit_opinion')}")
+            lines.append(f"- Internal control: {section.get('internal_control')}")
         if section.get("source_refs"):
-            lines.append(f"- 证据：{', '.join(section.get('source_refs', []))}")
+            lines.append(f"- Evidence: {', '.join(section.get('source_refs', []))}")
     lines.append("")
-    lines.append("## 11. 主要风险清单")
+    lines.append("## 11. Key Risks")
     lines.append("")
     for risk in report.get("risks", []) or []:
-        lines.append(f"- **{risk.get('risk_type')}**（{risk.get('severity')}）：{risk.get('description')} 证据：{', '.join(risk.get('source_refs', []))}")
+        lines.append(f"- **{risk.get('risk_type')}** ({risk.get('severity')}): {risk.get('description')} Evidence: {', '.join(risk.get('source_refs', []))}")
     lines.append("")
-    lines.append("## 12. 主要机会与改善信号")
+    lines.append("## 12. Opportunities and Improvement Signals")
     lines.append("")
     for opportunity in report.get("opportunities", []) or []:
-        lines.append(f"- **{opportunity.get('opportunity_type')}**（{opportunity.get('strength')}）：{opportunity.get('description')} 证据：{', '.join(opportunity.get('source_refs', []))}")
+        lines.append(f"- **{opportunity.get('opportunity_type')}** ({opportunity.get('strength')}): {opportunity.get('description')} Evidence: {', '.join(opportunity.get('source_refs', []))}")
     lines.append("")
-    lines.append("## 13. 对下游买卖决策员的信号")
+    lines.append("## 13. Signals for Downstream Decision-Makers")
     lines.append("")
     decision = report.get("decision_signals", {})
-    lines.append(f"- 价值型：{decision.get('suitable_for_value_investor')}")
-    lines.append(f"- 成长型：{decision.get('suitable_for_growth_investor')}")
-    lines.append(f"- 分红现金流型：{decision.get('suitable_for_dividend_investor')}")
-    lines.append(f"- 困境反转型：{decision.get('suitable_for_turnaround_investor')}")
-    lines.append(f"- 风险厌恶型是否应规避：{decision.get('avoid_for_risk_averse_investor')}")
+    lines.append(f"- Value style: {decision.get('suitable_for_value_investor')}")
+    lines.append(f"- Growth style: {decision.get('suitable_for_growth_investor')}")
+    lines.append(f"- Dividend cash-flow style: {decision.get('suitable_for_dividend_investor')}")
+    lines.append(f"- Turnaround style: {decision.get('suitable_for_turnaround_investor')}")
+    lines.append(f"- Avoid for risk-averse investors: {decision.get('avoid_for_risk_averse_investor')}")
     for signal in decision.get("signals", []) or []:
         lines.append(f"  - {signal.get('signal_type')} / {signal.get('direction')}：{signal.get('reason')}")
     lines.append("")
-    lines.append("## 14. 信息缺口与后续核验问题")
+    lines.append("## 14. Information Gaps and Follow-Up Questions")
     lines.append("")
     for question in report.get("open_questions", []) or []:
-        lines.append(f"- 问题：{question.get('question')}")
-        lines.append(f"  - 重要性：{question.get('why_it_matters')}")
-        lines.append(f"  - 建议证据：{question.get('suggested_evidence')}")
+        lines.append(f"- Question: {question.get('question')}")
+        lines.append(f"  - Why it matters: {question.get('why_it_matters')}")
+        lines.append(f"  - Suggested evidence: {question.get('suggested_evidence')}")
     if report.get("upstream_requests"):
         lines.append("")
-        lines.append("### 给信息处理员的补证请求建议")
+        lines.append("### Suggested Evidence Requests for the Information Processor")
         for request in report.get("upstream_requests", []) or []:
             lines.append(f"- {request.get('request_id')}（{request.get('request_type')}，blocking={request.get('blocking')}）：{request.get('question')}")
     lines.append("")
-    lines.append("## 15. 证据索引")
+    lines.append("## 15. Evidence Index")
     lines.append("")
     for ref in report.get("source_ref_index", []) or []:
         pages = ",".join(str(page) for page in ref.get("pages", []) or [])
@@ -2157,18 +2165,18 @@ def infer_financial_impact(finding: DigestFinding) -> str:
     """
     text = f"{finding.topic} {finding.summary}"
     if any(keyword in text for keyword in ["应收", "回款", "坏账", "信用减值"]):
-        return "可能影响经营现金流、坏账准备和利润质量。"
+        return "May affect operating cash flow, bad-debt allowances, and earnings quality."
     if any(keyword in text for keyword in ["存货", "跌价"]):
-        return "可能形成存货跌价损失并拖累毛利率。"
+        return "May create inventory write-down losses and depress gross margin."
     if any(keyword in text for keyword in ["商誉", "减值", "固定资产"]):
-        return "可能形成资产减值损失并压低净利润。"
+        return "May create asset-impairment losses and reduce net profit."
     if any(keyword in text for keyword in ["亏损", "盈利", "毛利"]):
-        return "可能直接影响利润表表现和估值基础。"
+        return "May directly affect income-statement performance and the valuation base."
     if any(keyword in text for keyword in ["会计差错", "追溯", "收入确认"]):
-        return "可能影响历史财务数据可比性和收入确认可靠性。"
+        return "May affect historical comparability and the reliability of revenue recognition."
     if any(keyword in text for keyword in ["担保", "诉讼", "资金占用", "违规"]):
-        return "可能造成或有负债、现金流出或治理折价。"
-    return "可能影响基本面判断，需要结合原文和后续公告复核。"
+        return "May create contingent liabilities, cash outflows, or a governance discount."
+    return "May affect the fundamental assessment and requires verification against the original text and subsequent announcements."
 
 
 def build_metric_claim(label: str, metric: dict[str, Any]) -> str:
@@ -2184,11 +2192,11 @@ def build_metric_claim(label: str, metric: dict[str, Any]) -> str:
     current = metric.get("current") or {}
     yoy = metric.get("yoy") or {}
     if current:
-        claim = f"{label}当前值为{current.get('value')}（{current.get('period')}，单位：{current.get('unit')}）"
+        claim = f"{label} current value is {current.get('value')} ({current.get('period')}, unit: {current.get('unit')})"
         if yoy:
-            claim += f"，同比/变动为{yoy.get('value')}"
+            claim += f"; YoY/change is {yoy.get('value')}"
         return claim
-    return f"{label}当前值未从 digest 中可靠抽取。"
+    return f"{label} current value was not reliably extracted from the digest."
 
 
 def build_method_limitations(input_audit: dict[str, Any], evidence_check: dict[str, Any]) -> list[str]:
@@ -2204,10 +2212,10 @@ def build_method_limitations(input_audit: dict[str, Any], evidence_check: dict[s
     limitations = list(input_audit.get("limitations", []) or [])
     unverified_total = int((evidence_check.get("summary") or {}).get("unverified_total") or 0)
     if unverified_total:
-        limitations.append(f"存在 {unverified_total} 项证据核验未直接命中 RAG，需要人工或信息处理员补证。")
-    limitations.append("本文件由确定性规则抽取和排序生成，只能作为 LLM 财务分析 Agent 的证据草稿和核验清单，不能作为正式研究结论。")
-    limitations.append("正式财务分析必须由 LLM Agent 基于 digest、RAG、补证响应和反证检查完成多轮研究后生成。")
-    limitations.append("本草稿未接入市场价格、估值、行业可比公司和财报之后事件，因此不输出买卖、仓位或目标价。")
+        limitations.append(f"{unverified_total} evidence checks did not directly match RAG and require manual or information-processor follow-up.")
+    limitations.append("This file is generated by deterministic extraction and ranking rules. It is only an evidence draft and verification checklist for the LLM financial analyst, not a formal research conclusion.")
+    limitations.append("Formal financial analysis must be produced by the LLM agent after multi-round research using the digest, RAG, evidence responses, and contrary-evidence checks.")
+    limitations.append("This draft does not include market price, valuation, industry peers, or post-filing events, so it does not provide trading, position-sizing, or target-price conclusions.")
     return deduplicate(limitations)
 
 
@@ -2220,11 +2228,11 @@ def build_recommended_next_steps(report_payload: dict[str, Any]) -> list[str]:
     返回值：
         建议动作列表。
     """
-    steps = ["由信息处理员针对 open_questions 中的高优先级问题补证。"]
+    steps = ["Ask the information processor to address high-priority items in open_questions."]
     rating = (report_payload.get("executive_summary") or {}).get("risk_rating")
     if rating in {"medium_high", "high", "critical"}:
-        steps.append("下游买卖决策员应先进行风险约束判断，再考虑风格化买卖意见。")
-    steps.append("若进入投资经理阶段，应补充估值、行业可比、市场价格和最新公告。")
+        steps.append("Downstream decision-makers should apply risk constraints before considering style-specific views.")
+    steps.append("Before the portfolio-manager stage, add valuation, industry peers, market price, and the latest announcements.")
     return steps
 
 
@@ -2257,7 +2265,7 @@ def metric_cell(metric_number: dict[str, Any] | None) -> str:
         Markdown 单元格文本。
     """
     if not metric_number:
-        return "未抽取"
+        return "Not Extracted"
     value = metric_number.get("value", "")
     unit = metric_number.get("unit", "")
     period = metric_number.get("period", "")
@@ -2276,10 +2284,10 @@ def metric_brief(metric: dict[str, Any]) -> str:
     current = metric.get("current") or {}
     yoy = metric.get("yoy") or {}
     if not current:
-        return "未可靠抽取"
+        return "Not Reliably Extracted"
     text = format_value_with_unit(current.get("value", ""), current.get("unit", ""))
     if yoy:
-        text += "，变动 " + format_value_with_unit(yoy.get("value", ""), yoy.get("unit", ""))
+        text += "; change " + format_value_with_unit(yoy.get("value", ""), yoy.get("unit", ""))
     return text
 
 
@@ -2375,7 +2383,7 @@ def format_number_for_reason(value: float | None, unit: str = "") -> str:
         格式化文本。
     """
     if value is None:
-        return "未知"
+        return "Unknown"
     return f"{value:.2f}{unit}"
 
 
@@ -2455,7 +2463,7 @@ def normalize_risk_severity(risk_type: str, summary: str, severity: str) -> str:
 
 def infer_dividend_suitability(dividend_text: str) -> str:
     """
-    根据利润分配文本判断分红型决策员适配度。
+    根据利润分配文本判断Dividend型决策员适配度。
 
     参数：
         dividend_text: 与利润分配相关的 digest 文本。

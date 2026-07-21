@@ -20,6 +20,7 @@ from pathlib import Path
 from typing import Any
 
 from research_console import config
+from research_orchestrator_scripts.recent_filing_policy import derive_recent_filing_plan
 
 # 角色名（与 .claude/agents 与契约的 owner 完全一致）
 ORCHESTRATOR = "orchestrator"
@@ -57,34 +58,34 @@ class StepDef:
 
 # 公司链路步骤（顺序即主线依赖顺序；market_context_update 与主线并行，汇入 valuation_update）
 COMPANY_STEP_DEFS: list[StepDef] = [
-    StepDef("audit", ORCHESTRATOR, "script", "研究状态盘点", None),
-    StepDef("collector_fetch", INFO_COLLECTOR, "script", "财报采集下载", "collector"),
-    StepDef("processor_parse", INFO_PROCESSOR, "script", "PDF 解析", "processor"),
-    StepDef("processor_digest", INFO_PROCESSOR, "script", "LLM Digest 构建", "processor"),
-    StepDef("processor_rag", INFO_PROCESSOR, "script", "RAG 索引构建", "processor"),
-    StepDef("processor_compare", INFO_PROCESSOR, "script", "摘要交叉比对", "processor"),
-    StepDef("financial_evidence_draft", FINANCIAL_ANALYST, "script", "财务证据草稿", "financial_evidence_draft"),
-    StepDef("formal_financial_analysis", FINANCIAL_ANALYST, "llm", "正式财务分析", "formal_financial_analysis"),
-    StepDef("market_context_update", MARKET_CONTEXT_COLLECTOR, "script", "市场上下文采集", "market_context"),
-    StepDef("valuation_update", VALUATION_ANALYST, "llm", "估值更新", "valuation"),
-    StepDef("final_audit", ORCHESTRATOR, "script", "终局状态盘点", None),
-    StepDef("deliver", ORCHESTRATOR, "synthetic", "结论交付", None),
+    StepDef("audit", ORCHESTRATOR, "script", "Audit Research State", None),
+    StepDef("collector_fetch", INFO_COLLECTOR, "script", "Collect Financial Filings", "collector"),
+    StepDef("processor_parse", INFO_PROCESSOR, "script", "Parse PDF", "processor"),
+    StepDef("processor_digest", INFO_PROCESSOR, "script", "Build LLM Digest", "processor"),
+    StepDef("processor_rag", INFO_PROCESSOR, "script", "Build RAG Index", "processor"),
+    StepDef("processor_compare", INFO_PROCESSOR, "script", "Cross-Check Summaries", "processor"),
+    StepDef("financial_evidence_draft", FINANCIAL_ANALYST, "script", "Draft Financial Evidence", "financial_evidence_draft"),
+    StepDef("formal_financial_analysis", FINANCIAL_ANALYST, "llm", "Complete Financial Analysis", "formal_financial_analysis"),
+    StepDef("market_context_update", MARKET_CONTEXT_COLLECTOR, "script", "Collect Market Context", "market_context"),
+    StepDef("valuation_update", VALUATION_ANALYST, "llm", "Update Valuation", "valuation"),
+    StepDef("final_audit", ORCHESTRATOR, "script", "Run Final State Audit", None),
+    StepDef("deliver", ORCHESTRATOR, "synthetic", "Deliver Conclusion", None),
 ]
 
 # 行业链路步骤
 INDUSTRY_STEP_DEFS: list[StepDef] = [
-    StepDef("industry_collect", INDUSTRY_INFO_COLLECTOR, "script", "行业输入包收集", None),
-    StepDef("industry_validate", INDUSTRY_INFO_COLLECTOR, "script", "行业包校验", None),
-    StepDef("industry_research", INDUSTRY_RESEARCHER, "llm", "行业研究结论", None),
-    StepDef("industry_deliver", ORCHESTRATOR, "synthetic", "行业交付", None),
+    StepDef("industry_collect", INDUSTRY_INFO_COLLECTOR, "script", "Collect Industry Input Package", None),
+    StepDef("industry_validate", INDUSTRY_INFO_COLLECTOR, "script", "Validate Industry Package", None),
+    StepDef("industry_research", INDUSTRY_RESEARCHER, "llm", "Complete Industry Research", None),
+    StepDef("industry_deliver", ORCHESTRATOR, "synthetic", "Deliver Industry Conclusion", None),
 ]
 
 COMPANY_STEP_MAP = {item.step_id: item for item in COMPANY_STEP_DEFS}
 INDUSTRY_STEP_MAP = {item.step_id: item for item in INDUSTRY_STEP_DEFS}
 
-SKIP_REASON_REUSE = "复用已有产物"
-SKIP_REASON_LLM_MODE = "llm_mode=skip，跳过 LLM 步骤（交付降级）"
-SKIP_REASON_MARKET_OFF = "run_market_context=false，跳过市场上下文采集"
+SKIP_REASON_REUSE = "Reused existing artifacts"
+SKIP_REASON_LLM_MODE = "llm_mode=skip; skipped the LLM step and downgraded the delivery"
+SKIP_REASON_MARKET_OFF = "run_market_context=false; skipped market-context collection"
 
 
 # ---------------------------------------------------------------------------
@@ -100,18 +101,18 @@ def _strict_cutoff_date(value: _dt.date | str) -> _dt.date:
         标准 date。
     """
     if isinstance(value, _dt.datetime):
-        raise ValueError("cutoff 必须是 date 或严格 ISO 日期 YYYY-MM-DD，不能包含时间")
+        raise ValueError("cutoff must be a date or strict ISO date in YYYY-MM-DD format; time values are not allowed")
     if isinstance(value, _dt.date):
         return value
     text = str(value or "").strip()
     if len(text) != 10 or text[4:5] != "-" or text[7:8] != "-":
-        raise ValueError(f"cutoff 必须是严格 ISO 日期 YYYY-MM-DD，当前值：{text or '<empty>'}")
+        raise ValueError(f"cutoff must be a strict ISO date in YYYY-MM-DD format; received: {text or '<empty>'}")
     try:
         parsed = _dt.date.fromisoformat(text)
     except ValueError as exc:
-        raise ValueError(f"cutoff 不是有效日期：{text}") from exc
+        raise ValueError(f"cutoff is not a valid date: {text}") from exc
     if parsed.isoformat() != text:
-        raise ValueError(f"cutoff 必须是严格 ISO 日期 YYYY-MM-DD，当前值：{text}")
+        raise ValueError(f"cutoff must be a strict ISO date in YYYY-MM-DD format; received: {text}")
     return parsed
 
 
@@ -348,11 +349,47 @@ def build_collector_cmd(
     ]
 
 
+def build_recent_collector_cmds(
+    stock_code: str,
+    as_of_date: str,
+    *,
+    annual_lookback: int = 2,
+) -> list[dict[str, Any]]:
+    """为近期财报集合构建逐窗口采集命令。
+
+    每条命令仍调用现有 collector，因此公告去重、修订版保留和下载状态合并均沿用
+    原实现；这里只负责把多期策略展开为可审计的公司级小窗口。
+    """
+    result: list[dict[str, Any]] = []
+    for item in derive_recent_filing_plan(as_of_date, annual_lookback=annual_lookback):
+        result.append(
+            {
+                **item.to_dict(),
+                "cmd": [
+                    sys.executable,
+                    str(config.CNINFO_SCRIPT),
+                    "--start-date",
+                    item.disclosure_start,
+                    "--end-date",
+                    item.disclosure_end,
+                    "--report-types",
+                    item.report_type,
+                    "--keyword",
+                    str(stock_code),
+                    "--download",
+                ],
+            }
+        )
+    return result
+
+
 def build_processor_parse_cmd(
     stock_code: str,
     report_type: str,
     report_year: str,
     overwrite: bool = False,
+    announcement_id: str = "",
+    pdf_path: str = "",
 ) -> list[str]:
     """构建 PDF 解析命令。
 
@@ -361,19 +398,26 @@ def build_processor_parse_cmd(
         report_type: 报告类型。
         report_year: 财报年度。
         overwrite: force_refresh 时覆盖已有 content.json。
+        announcement_id: manifest 有公告 ID 时精确过滤。
+        pdf_path: 公告 ID 缺失时使用精确 PDF 路径，优先级高于宽泛筛选。
     返回值：
         run_pdf_processing.py 命令参数列表。
     """
-    cmd = [
-        sys.executable,
-        str(config.PDF_PROCESS_SCRIPT),
-        "--stock-code",
-        str(stock_code),
-        "--report-type",
-        str(report_type or "annual"),
-        "--report-year",
-        str(report_year),
-    ]
+    if pdf_path:
+        cmd = [sys.executable, str(config.PDF_PROCESS_SCRIPT), "--pdf", str(pdf_path)]
+    else:
+        cmd = [
+            sys.executable,
+            str(config.PDF_PROCESS_SCRIPT),
+            "--stock-code",
+            str(stock_code),
+            "--report-type",
+            str(report_type or "annual"),
+            "--report-year",
+            str(report_year),
+        ]
+        if announcement_id:
+            cmd.extend(["--announcement-id", str(announcement_id)])
     if overwrite:
         cmd.append("--overwrite")
     return cmd
@@ -476,6 +520,16 @@ def build_financial_cmd(
     if allow_incomplete_digest:
         cmd.append("--allow-incomplete-digest")
     return cmd
+
+
+def build_filing_set_cmd(research_state_path: str) -> list[str]:
+    """构建多期财报交接包命令。"""
+    return [
+        sys.executable,
+        str(config.FINANCIAL_SCRIPT),
+        "--research-state",
+        str(research_state_path),
+    ]
 
 
 def build_market_context_cmd(
@@ -623,90 +677,6 @@ def cmd_display(cmd: list[str]) -> str:
     return " ".join(parts)
 
 
-def _coordinator_arg(value: Any) -> str:
-    """把 /rec 参数编码为不会因空格或中文标点被拆分的单个值。
-
-    参数：
-        value: 任意可字符串化参数。
-    返回值：
-        JSON 字符串形式的参数值；布尔值使用小写 true/false。
-    """
-    if isinstance(value, bool):
-        return "true" if value else "false"
-    return json.dumps(str(value), ensure_ascii=False)
-
-
-def build_company_coordinator_prompt(params: dict[str, Any], run_id: str) -> str:
-    """构造一次性完整 /rec 主协调会话提示词。
-
-    功能：
-        把 company run 的现有参数完整透传给项目 /rec Skill，并明确这次调用
-        必须由同一个持续会话按 research_state 复用规则调度 custom agents。
-        控制台事件来自 Claude stream-json 与工作区 audit，提示词不要求角色手工发事件。
-    参数：
-        params: company run 参数。
-        run_id: 控制台运行标识，仅用于审计关联。
-    返回值：
-        可直接作为 ``claude -p`` 单个参数的完整提示词。
-    """
-    target = params.get("target") or params.get("stock_code") or params.get("company_name") or ""
-    fiscal_year = params.get("fiscal_year") or params.get("report_year") or ""
-    ordered = [
-        ("target", target),
-        ("stock_code", params.get("stock_code")),
-        ("company_name", params.get("company_name")),
-        ("fiscal_year", fiscal_year),
-        ("report_type", params.get("report_type") or "annual"),
-        ("depth", params.get("depth") or "standard"),
-        ("focus", params.get("focus")),
-        ("as_of_date", params.get("as_of_date")),
-        ("force_refresh", bool(params.get("force_refresh"))),
-        ("run_market_context", params.get("run_market_context", True) is not False),
-        ("market_context_freshness", params.get("market_context_freshness")),
-        ("market_price", params.get("market_price")),
-        ("valuation_method", params.get("valuation_method")),
-        ("run_industry", params.get("run_industry", False) is True),
-    ]
-    command_parts = ["/rec"]
-    for key, value in ordered:
-        if value is None or (isinstance(value, str) and not value.strip()):
-            continue
-        command_parts.append(f"{key}={_coordinator_arg(value)}")
-    command = " ".join(command_parts)
-    return _single_line(
-        f"{command}。这是 research_console run_id={run_id} 的一个完整公司研究主协调会话。"
-        "必须沿用项目公司研究 Skill、research_state 复用规则与对应 custom agents 完成端到端研究，"
-        "不要把财务分析、估值或市场上下文拆成彼此独立的顶层 claude CLI 会话。"
-        "控制台会从 stream-json 与工作区 audit 自动生成状态事件，不需要为控制台手工输出事件。"
-        "若使用 TaskCreate 管理工作项，拿到任务编号后，后续对应 Agent 调用的 description 必须以"
-        "[任务#编号] 开头并紧跟简短任务名，便于控制台把真实 Agent 与调度任务稳定关联。"
-        "本次只执行阶段一，不实现或输出阶段二 research_requests 协议。"
-        "完成后请交付结论前置的完整公司研究报告。"
-    )
-
-
-def build_claude_stream_command(prompt: str, claude_path: str = "claude") -> list[str]:
-    """构造 Claude Code stream-json 命令参数。
-
-    参数：
-        prompt: 完整 /rec 提示词。
-        claude_path: claude 可执行文件路径；测试可注入固定值。
-    返回值：
-        不经 shell 的 subprocess 参数列表。
-    """
-    return [
-        str(claude_path),
-        "-p",
-        str(prompt),
-        "--output-format",
-        "stream-json",
-        "--verbose",
-        "--include-partial-messages",
-        "--permission-mode",
-        config.COORDINATOR_PERMISSION_MODE,
-    ]
-
-
 # ---------------------------------------------------------------------------
 # LLM 提示词模板（manual 与 claude_cli 共用）
 # ---------------------------------------------------------------------------
@@ -752,27 +722,44 @@ def build_formal_financial_analysis_prompt(ctx: dict[str, Any]) -> dict[str, Any
         str(Path(formal_dir) / "formal_financial_analysis.json"),
         str(Path(formal_dir) / "formal_financial_analysis.md"),
     ]
-    focus_text = str(ctx.get("focus") or "无特别聚焦")
+    focus_text = str(ctx.get("focus") or "No specific focus")
+    filing_set_path = str(ctx.get("filing_set_path") or "")
+    if filing_set_path:
+        evidence_intro = (
+            f"Use the cutoff-safe multi-period filing-set handoff {filing_set_path}. "
+            f"Its financial_input_fingerprint is {ctx.get('financial_input_fingerprint') or ''}. "
+            "Read every source filing listed in that handoff using its exact digest/RAG/content paths; compare the two annual baselines, all available current/prior-year interim periods, revisions, and like-for-like periods. "
+            "Treat Q1, semiannual, and Q3 flow values as 3M/6M/9M cumulative. Derive standalone quarters only when metric definition, unit, scope, and restatement basis match, and never add cumulative periods together. "
+            "Prefix every page/chunk citation with the filing_id/source_ref_prefix so evidence from different documents cannot collide. "
+        )
+    else:
+        evidence_intro = (
+            f"Use the {ctx.get('report_year') or ''} {ctx.get('report_type') or 'annual'} filing. "
+            f"Evidence inputs: processed-report directory {ctx.get('report_dir') or ''}; "
+            f"LLM digest {ctx.get('llm_digest_path') or ''}; "
+            f"RAG index {ctx.get('rag_chunks_path') or ''}; "
+            f"summary comparison {ctx.get('summary_comparison_path') or ''}; "
+            f"financial evidence draft {ctx.get('analyst_report_path') or ''}. "
+        )
     prompt = _single_line(
-        f"请使用 financial-analyst agent 完成正式财务分析。研究对象：{ctx.get('company_name') or ''}"
-        f"（{ctx.get('stock_code') or ''}）{ctx.get('report_year') or ''} 年 {ctx.get('report_type') or 'annual'} 财报，"
-        f"分析深度 {ctx.get('depth') or 'standard'}，研究重点：{focus_text}。"
-        f"证据输入：信息处理员报告目录 {ctx.get('report_dir') or ''}；"
-        f"llm_digest：{ctx.get('llm_digest_path') or ''}；"
-        f"RAG 索引：{ctx.get('rag_chunks_path') or ''}；"
-        f"摘要比对：{ctx.get('summary_comparison_path') or ''}；"
-        f"财务证据草稿：{ctx.get('analyst_report_path') or ''}。"
-        f"知识截止日 as_of_date={ctx.get('as_of_date') or ''}；来源财报披露日="
-        f"{ctx.get('source_report_published_at') or '未提供'}。"
-        f"要求：基于以上证据完成经营、盈利、现金流与资产质量判断，输出预期差、风险与证伪条件；"
-        f"任何晚于 as_of_date 的公告、财报、网页解释或市场数据必须排除，不能进入事实或推断。"
-        f"并把 formal_financial_analysis.json 与 formal_financial_analysis.md 写入 {formal_dir}。"
-        f"JSON 顶层需包含 analysis_metadata（analysis_depth、focus 与 as_of_date）以及 cutoff_audit，"
-        f"cutoff_audit 至少记录 cutoff_date、status/compliant、最大纳入日期、未来来源排除数和无日期来源数。"
+        f"Use the financial-analyst agent to complete the formal financial analysis for "
+        f"{ctx.get('company_name') or ''} ({ctx.get('stock_code') or ''}). "
+        f"{evidence_intro}"
+        f"Analysis depth: {ctx.get('depth') or 'standard'}. Research focus: {focus_text}. "
+        "Use the compact canonical read order: research_state once, any compatible formal JSON once, analyst_report.json, llm_digest.json, summary_comparison.json, targeted RAG chunks, then targeted content.json only for unresolved evidence. Do not read both JSON and Markdown mirrors and do not reread unchanged files. "
+        f"Hard knowledge cutoff: as_of_date={ctx.get('as_of_date') or ''}. Source filing publication date: "
+        f"{ctx.get('source_report_published_at') or 'not provided'}. "
+        "Based on this evidence, assess operations, earnings, cash flow, and asset quality, and provide expectation gaps, risks, and falsification conditions. "
+        "Exclude any announcement, filing, web interpretation, or market data later than as_of_date from both facts and inferences. "
+        f"Write formal_financial_analysis.json and formal_financial_analysis.md to {formal_dir}. "
+        "Write all narrative content and human-readable JSON values in English; preserve Chinese proper nouns or source quotations only as evidence data with English explanation. "
+        "The JSON root must include analysis_metadata with analysis_depth, focus, as_of_date, and financial_input_fingerprint, plus source_filings and cutoff_audit. "
+        "When a filing-set handoff is provided, copy its fingerprint and ordered filing identities exactly. "
+        "cutoff_audit must use these exact keys without aliases: cutoff_date, strict_cutoff, status, source_report_published_at, maximum_included_information_date, future_source_count, future_excluded_count, undated_source_count, future_fact_claim_count, undated_fact_claim_count, and cutoff_compliant."
     )
     instructions = (
-        "在 Claude Code 中执行下方提示词（或点击复制后直接粘贴运行）。\n"
-        "后端每 2 秒轮询期望产物，两份文件全部落盘后本步骤自动完成：\n"
+        "Run the prompt below in Claude Code, or copy and paste it directly.\n"
+        "The backend polls for the expected artifacts every two seconds and completes this step after both files are written:\n"
         + "\n".join(f"- {item}" for item in expected)
     )
     return {"instructions": instructions, "prompt": prompt, "expected_artifacts": expected}
@@ -791,23 +778,28 @@ def build_valuation_prompt(ctx: dict[str, Any]) -> dict[str, Any]:
     filenames = ["valuation_report.json", "valuation_report.md", "valuation_evidence_table.json", "valuation_audit.json"]
     expected = [str(Path(valuation_dir) / name) for name in filenames]
     prompt = _single_line(
-        f"请使用 valuation-analyst agent 完成估值更新。研究对象：{ctx.get('company_name') or ''}"
-        f"（{ctx.get('stock_code') or ''}），财报年度 {ctx.get('report_year') or ''}，"
-        f"估值观察日 as_of_date={ctx.get('as_of_date') or ''}，同时也是所有输入的硬性知识截止日。"
-        f"输入：财务证据草稿目录 {ctx.get('analyst_dir') or ''}；"
-        f"正式财务分析：{ctx.get('formal_json_path') or ''}；"
-        f"市场上下文包：{ctx.get('market_context_package_path') or '（缺失，按低置信处理）'}。"
-        f"要求：输出估值区间、三档每股合理价值（bear/base/bull）、基准目标价、相对现价上下行空间、"
-        f"关键假设与估值证伪条件；财报、价格、股本、同行、历史估值、利率和网页来源均不得晚于 as_of_date，"
-        f"历史序列必须先截断再计算，缺历史价格时不得拿今天价格代替。缺市场数据时给低置信估值边界并写明补数请求。"
-        f"valuation_audit.json 必须包含 cutoff_audit，记录截止日、最大纳入日期、未来来源排除数和合规状态。"
-        f"把 {'、'.join(filenames)} 四件套写入 {valuation_dir}。"
+        f"Use the valuation-analyst agent to update the valuation for {ctx.get('company_name') or ''} "
+        f"({ctx.get('stock_code') or ''}), using fiscal-year {ctx.get('report_year') or ''} evidence. "
+        f"The valuation observation date and hard knowledge cutoff for every input is as_of_date={ctx.get('as_of_date') or ''}. "
+        f"Inputs: financial evidence draft directory {ctx.get('analyst_dir') or ''}; "
+        f"formal financial analysis {ctx.get('formal_json_path') or ''}; "
+        f"financial input fingerprint {ctx.get('financial_input_fingerprint') or ''}; "
+        f"market-context package {ctx.get('market_context_package_path') or '(missing; treat as low confidence)'}. "
+        "Treat formal_financial_analysis.json as the authoritative financial input and do not also read its Markdown mirror. Use only market-context sources explicitly marked cutoff_status=eligible; do not read raw_search_results.json, excluded sources, future or undated discovery-only rows, or valuation templates from unrelated companies. "
+        "Output a valuation range, bear/base/bull fair value per share, base target price, upside or downside versus current price, key assumptions, and valuation falsification conditions. "
+        "No filing, price, share-count, peer, historical valuation, interest-rate, or web source may be later than as_of_date. "
+        "Truncate historical series before calculating metrics, and never substitute today's price when historical price is missing. "
+        "If market data is missing, provide low-confidence valuation boundaries and a specific data request. "
+        "Write all narrative content and human-readable JSON values in English; preserve Chinese proper nouns or source quotations only as evidence data with English explanation. "
+        "valuation_audit.json must copy financial_input_fingerprint and source_filing_ids from the formal financial analysis so reuse can be invalidated when a newer filing enters the set. "
+        "valuation_audit.json must include cutoff_audit using these exact keys without aliases: cutoff_date, strict_cutoff, status, financial_input_max_date, market_price_max_date, share_count_max_date, peer_data_max_date, historical_valuation_max_date, interest_rate_max_date, market_context_max_date, future_source_count, future_excluded_count, undated_source_count, future_fact_claim_count, undated_fact_claim_count, and cutoff_compliant. "
+        f"Write the four-file package ({', '.join(filenames)}) to {valuation_dir}."
     )
     instructions = (
-        "在 Claude Code 中执行下方提示词。后端同时监视新旧两种目录布局，任一凑齐四件套即自动完成：\n"
+        "Run the prompt below in Claude Code. The backend monitors both the current and legacy directory layouts and completes automatically when either contains the full four-file package:\n"
         + "\n".join(f"- {item}" for item in expected)
-        + f"\n（兼容旧布局：{ctx.get('valuation_dir_legacy') or ''}）"
-        + "\n若产出 upstream_request.json，控制台会发出回流提示。"
+        + f"\nLegacy layout compatibility: {ctx.get('valuation_dir_legacy') or ''}"
+        + "\nIf upstream_request.json is produced, the console emits a backflow notice."
     )
     return {"instructions": instructions, "prompt": prompt, "expected_artifacts": expected}
 
@@ -824,16 +816,18 @@ def build_industry_research_prompt(ctx: dict[str, Any]) -> dict[str, Any]:
     package_dir = str(ctx.get("package_dir") or "")
     expected = [str(Path(package_dir) / "industry_research_view.json")]
     prompt = _single_line(
-        f"请使用 industry-researcher agent 完成行业研究。研究对象：{ctx.get('industry_name') or ctx.get('target') or ''}。"
-        f"行业输入包三件套：{ctx.get('package_json') or ''}；"
-        f"{ctx.get('package_md') or ''}；"
-        f"{ctx.get('evidence_table') or ''}。"
-        f"要求：基于输入包完成行业归属、景气、供需、竞争格局与锚点公司位置判断，"
-        f"区分已验证事实、基于证据的推断、未证实假设与题材映射，给出可跟踪变量与证伪条件，"
-        f"并把结构化结论另存为 {expected[0]}。"
+        f"Use the industry-researcher agent to complete industry research on {ctx.get('industry_name') or ctx.get('target') or ''}. "
+        f"Industry input package: {ctx.get('package_json') or ''}; "
+        f"{ctx.get('package_md') or ''}; "
+        f"{ctx.get('evidence_table') or ''}. "
+        "Use the package to assess industry classification, cycle conditions, supply and demand, competitive structure, and anchor-company positioning. "
+        "Separate verified facts, evidence-based inferences, unverified hypotheses, and theme-only mappings. "
+        "Provide trackable variables and falsification conditions. "
+        "Write all narrative content and human-readable JSON values in English; preserve Chinese proper nouns or source quotations only as evidence data with English explanation. "
+        f"Save the structured conclusion to {expected[0]}."
     )
     instructions = (
-        "在 Claude Code 中执行下方提示词。行业研究结论文件落盘后本步骤自动完成；\n"
-        "若长期不产出，可在前端点击“标记完成”兜底：\n" + "\n".join(f"- {item}" for item in expected)
+        "Run the prompt below in Claude Code. This step completes automatically after the industry research conclusion file is written.\n"
+        "If generation remains stalled, use the frontend's Mark Complete fallback:\n" + "\n".join(f"- {item}" for item in expected)
     )
     return {"instructions": instructions, "prompt": prompt, "expected_artifacts": expected}

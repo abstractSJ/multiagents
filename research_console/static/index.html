@@ -1,10 +1,10 @@
 <!DOCTYPE html>
-<html lang="zh-CN">
+<html lang="en">
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>研究工坊 · 多智能体投研控制台</title>
-<meta name="description" content="轻量级多智能体投研任务状态控制台">
+<title>Research Workshop · Multi-Agent Investment Research Console</title>
+<meta name="description" content="Lightweight multi-agent investment research workflow console">
 <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='7' fill='%23191b17'/%3E%3Crect x='7' y='8' width='18' height='13' fill='%23d8ff5f'/%3E%3Crect x='10' y='11' width='12' height='7' fill='%23191b17'/%3E%3Crect x='13' y='23' width='6' height='3' fill='%23d8ff5f'/%3E%3C/svg%3E">
 <link rel="stylesheet" href="style.css">
 <script>
@@ -21,81 +21,81 @@
 </head>
 <body>
 <header class="topbar">
-  <div class="brand" aria-label="研究工坊">
+  <div class="brand" aria-label="Research Workshop">
     <span class="brand-mark" aria-hidden="true"><i></i><i></i><i></i></span>
     <span>
-      <strong>研究工坊</strong>
+      <strong>Research Workshop</strong>
       <small>LIGHT RESEARCH CONSOLE</small>
     </span>
   </div>
 
-  <nav id="modeTabs" class="mode-tabs" aria-label="运行模式">
-    <button class="mode-tab active" type="button" data-mode="company">公司</button>
-    <button class="mode-tab" type="button" data-mode="industry">行业</button>
-    <button class="mode-tab" type="button" data-mode="demo">演示</button>
-    <button class="mode-tab" type="button" data-mode="replay">回放</button>
+  <nav id="modeTabs" class="mode-tabs" aria-label="Run mode">
+    <button class="mode-tab active" type="button" data-mode="company">Company</button>
+    <button class="mode-tab" type="button" data-mode="industry">Industry</button>
+    <button class="mode-tab" type="button" data-mode="demo">Demo</button>
+    <button class="mode-tab" type="button" data-mode="replay">Replay</button>
   </nav>
 
   <div class="top-actions">
     <label class="run-picker">
-      <span>历史运行</span>
-      <select id="runSelect" aria-label="历史运行"><option value="">暂无运行</option></select>
+      <span>Run History</span>
+      <select id="runSelect" aria-label="Run history"><option value="">No runs yet</option></select>
     </label>
-    <button id="refreshRuns" class="icon-button" type="button" title="刷新运行历史" aria-label="刷新运行历史">↻</button>
-    <span id="healthBadge" class="health-badge" data-tone="neutral"><i></i><span>服务检查中</span></span>
-    <button id="themeToggle" class="icon-button" type="button" title="切换主题" aria-label="切换主题">◐</button>
+    <button id="refreshRuns" class="icon-button" type="button" title="Refresh run history" aria-label="Refresh run history">↻</button>
+    <span id="healthBadge" class="health-badge" data-tone="neutral"><i></i><span>Checking service</span></span>
+    <button id="themeToggle" class="icon-button" type="button" title="Toggle theme" aria-label="Toggle theme">◐</button>
   </div>
 </header>
 
-<section class="control-strip" aria-label="运行参数">
+<section class="control-strip" aria-label="Run parameters">
   <form id="companyForm" class="run-form">
-    <label class="field field-main"><span>公司 / 股票代码</span><input id="companyTarget" required placeholder="例如 600519 或 贵州茅台"></label>
-    <label class="field"><span>财年</span><input id="companyYear" type="number" min="2000" max="2035" placeholder="最新"></label>
-    <label class="field"><span>报告</span><select id="companyReport"><option value="annual">年报</option><option value="semiannual">半年报</option><option value="q1">一季报</option><option value="q3">三季报</option></select></label>
-    <label class="field"><span>深度</span><select id="companyDepth"><option value="quick">快速</option><option value="standard" selected>标准</option><option value="deep">深入</option></select></label>
-    <label class="field field-main"><span>关注点</span><input id="companyFocus" placeholder="可选，例如盈利质量与分红"></label>
-    <label class="field"><span>基准日</span><input id="companyDate" type="date"></label>
-    <label class="check-field"><input id="companyMarket" type="checkbox" checked><span>市场上下文</span></label>
-    <label class="check-field"><input id="companyForce" type="checkbox"><span>强制重跑</span></label>
-    <label class="field"><span>执行模式</span><select id="companyLlm"><option value="coordinator_cli" selected>完整协调会话</option><option value="manual">手工分步</option><option value="claude_cli">Claude 分步</option><option value="skip">跳过 LLM</option></select></label>
-    <div class="form-actions"><button id="auditButton" class="button secondary" type="button">只体检</button><button class="button primary" type="submit">开始研究</button></div>
+    <label class="field field-main"><span>Company / Stock Code</span><input id="companyTarget" required placeholder="e.g. 600519 or Kweichow Moutai"></label>
+    <label class="field"><span>Pinned Fiscal Year</span><input id="companyYear" type="number" min="2000" max="2035" placeholder="Auto"></label>
+    <label class="field"><span>Filing Scope</span><select id="companyReport"><option value="" selected>Recent Filing History (2Y)</option><option value="annual">Latest / Pinned Annual Report</option><option value="semiannual">Latest / Pinned Semiannual Report</option><option value="q1">Latest / Pinned Q1 Report</option><option value="q3">Latest / Pinned Q3 Report</option></select></label>
+    <label class="field"><span>Depth</span><select id="companyDepth"><option value="quick">Quick</option><option value="standard" selected>Standard</option><option value="deep">Deep</option></select></label>
+    <label class="field field-main"><span>Focus</span><input id="companyFocus" placeholder="Optional, e.g. earnings quality and dividends"></label>
+    <label class="field"><span>As-of Date</span><input id="companyDate" type="date"></label>
+    <label class="check-field"><input id="companyMarket" type="checkbox" checked><span>Market Context</span></label>
+    <label class="check-field"><input id="companyForce" type="checkbox"><span>Force Refresh</span></label>
+    <label class="field"><span>Execution Mode</span><select id="companyLlm"><option value="python_agent_coordinator" selected>Python Agent Coordinator</option><option value="manual">Manual Steps</option><option value="claude_cli">Claude Step-by-Step</option><option value="skip">Skip LLM</option></select></label>
+    <div class="form-actions"><button id="auditButton" class="button secondary" type="button">Audit Only</button><button class="button primary" type="submit">Start Research</button></div>
   </form>
 
   <form id="industryForm" class="run-form hidden">
-    <label class="field field-main"><span>行业 / 主题</span><input id="industryTarget" required placeholder="例如 工业气体 / 稀土出口管制"></label>
-    <label class="field field-main"><span>行业名称</span><input id="industryName" placeholder="可选"></label>
-    <label class="field"><span>交付类型</span><select id="industryDeliverable"><option value="investment_research">投资研究</option><option value="theme_event_study">事件研究</option></select></label>
-    <label class="field"><span>锚点代码</span><input id="anchorCode" placeholder="可选"></label>
-    <label class="field"><span>锚点公司</span><input id="anchorName" placeholder="可选"></label>
-    <label class="field"><span>锚点财年</span><input id="anchorYear" type="number" min="2000" max="2035" placeholder="可选"></label>
-    <label class="field"><span>基准日</span><input id="industryDate" type="date"></label>
-    <label class="field"><span>执行模式</span><select id="industryLlm"><option value="manual">手工分步</option><option value="claude_cli">Claude 分步</option><option value="skip">跳过 LLM</option></select></label>
-    <div class="form-actions"><button class="button primary" type="submit">开始行业研究</button></div>
+    <label class="field field-main"><span>Industry / Theme</span><input id="industryTarget" required placeholder="e.g. industrial gases / rare-earth export controls"></label>
+    <label class="field field-main"><span>Industry Name</span><input id="industryName" placeholder="Optional"></label>
+    <label class="field"><span>Deliverable</span><select id="industryDeliverable"><option value="investment_research">Investment Research</option><option value="theme_event_study">Theme / Event Study</option></select></label>
+    <label class="field"><span>Anchor Code</span><input id="anchorCode" placeholder="Optional"></label>
+    <label class="field"><span>Anchor Company</span><input id="anchorName" placeholder="Optional"></label>
+    <label class="field"><span>Anchor Fiscal Year</span><input id="anchorYear" type="number" min="2000" max="2035" placeholder="Optional"></label>
+    <label class="field"><span>As-of Date</span><input id="industryDate" type="date"></label>
+    <label class="field"><span>Execution Mode</span><select id="industryLlm"><option value="manual">Manual Steps</option><option value="claude_cli">Claude Step-by-Step</option><option value="skip">Skip LLM</option></select></label>
+    <div class="form-actions"><button class="button primary" type="submit">Start Industry Research</button></div>
   </form>
 
   <form id="demoForm" class="run-form compact hidden">
-    <p>不访问网络，用一段脚本化流程检查任务路径、状态侧栏与接口连接。</p>
-    <button class="button primary" type="submit">播放演示</button>
+    <p>Run a scripted offline workflow to verify the task route, status rail, and API connection.</p>
+    <button class="button primary" type="submit">Run Demo</button>
   </form>
 
   <form id="replayForm" class="run-form compact hidden">
-    <label class="field field-main"><span>股票代码</span><input id="replayCode" required placeholder="例如 600519"></label>
-    <label class="field"><span>财年</span><input id="replayYear" type="number" min="2000" max="2035" required placeholder="2025"></label>
-    <button class="button primary" type="submit">生成回放</button>
+    <label class="field field-main"><span>Stock Code</span><input id="replayCode" required placeholder="e.g. 600519"></label>
+    <label class="field"><span>Fiscal Year</span><input id="replayYear" type="number" min="2000" max="2035" required placeholder="2025"></label>
+    <button class="button primary" type="submit">Generate Replay</button>
   </form>
 </section>
 
 <main class="app-shell">
-  <section class="workspace" aria-label="任务路径">
+  <section class="workspace" aria-label="Task route">
     <div class="scene-card">
       <div class="scene-copy">
         <span class="eyebrow">AGENT ROOM</span>
-        <h1 id="sceneTitle">调度员与研究团队待命</h1>
-        <p id="sceneSubtitle">前排调度员接收目标，后方七名专业 Agent 在各自工作站完成研究链路。</p>
+        <h1 id="sceneTitle">Coordinator and Research Team Ready</h1>
+        <p id="sceneSubtitle">The coordinator receives the objective while seven specialist agents execute the research workflow at their stations.</p>
         <div class="scene-meta">
-          <span id="sceneStatus" class="status-chip" data-status="idle">○ 空闲</span>
-          <span id="sceneOwner">调度官待命</span>
-          <span id="sceneTool">无活动工具</span>
+          <span id="sceneStatus" class="status-chip" data-status="idle">○ Idle</span>
+          <span id="sceneOwner">Coordinator ready</span>
+          <span id="sceneTool">No active tool</span>
         </div>
       </div>
 
@@ -103,7 +103,7 @@
         多 Agent 像素房间：所有角色常驻同一空间，前排调度员负责接收任务与分派。
         插画仍是单个内联 SVG，不加载图片、Canvas 或游戏引擎；JS 只切换活跃/完成状态类。
       -->
-      <svg class="pixel-scene pixel-room" viewBox="0 0 640 400" role="img" aria-label="宝可梦式像素研究室，八名 Agent 在各自电脑前协作">
+      <svg class="pixel-scene pixel-room" viewBox="0 0 640 448" role="img" aria-label="Pixel research lab where eight agents collaborate at their workstations">
         <defs>
           <pattern id="roomTiles" width="24" height="24" patternUnits="userSpaceOnUse">
             <path d="M24 0H0V24" fill="none" stroke="currentColor" stroke-opacity=".08" stroke-width="1"/>
@@ -129,9 +129,9 @@
           </symbol>
         </defs>
 
-        <rect class="room-wall" x="0" y="0" width="640" height="400" rx="18"/>
-        <rect class="room-floor" x="12" y="54" width="616" height="334"/>
-        <rect x="12" y="54" width="616" height="334" fill="url(#roomTiles)"/>
+        <rect class="room-wall" x="0" y="0" width="640" height="448" rx="18"/>
+        <rect class="room-floor" x="12" y="54" width="616" height="382"/>
+        <rect x="12" y="54" width="616" height="382" fill="url(#roomTiles)"/>
         <rect class="room-board" x="206" y="12" width="228" height="31"/>
         <text class="room-board-text" x="320" y="33" text-anchor="middle">MULTI-AGENT RESEARCH LAB</text>
         <rect class="room-window" x="34" y="13" width="116" height="29"/>
@@ -140,38 +140,41 @@
         <rect class="room-window-glow" x="498" y="20" width="100" height="15"/>
 
         <g class="agent-station" data-agent="information-collector" style="--agent-color:#3f69d8" transform="translate(18 66)">
-          <title>信息采集员 · 财报与基础资料</title><use href="#agentDesk" width="132" height="104"/>
-          <text class="station-label" x="66" y="118" text-anchor="middle">信息采集</text>
+          <title>Information Collector · Filings and source materials</title><use href="#agentDesk" width="132" height="104"/>
+          <text class="station-label" x="66" y="118" text-anchor="middle">Collection</text>
         </g>
         <g class="agent-station" data-agent="information-processor" style="--agent-color:#188b67" transform="translate(175 66)">
-          <title>信息处理员 · PDF、Digest 与 RAG</title><use href="#agentDesk" width="132" height="104"/>
-          <text class="station-label" x="66" y="118" text-anchor="middle">信息处理</text>
+          <title>Information Processor · PDF, digest, and RAG</title><use href="#agentDesk" width="132" height="104"/>
+          <text class="station-label" x="66" y="118" text-anchor="middle">Processing</text>
         </g>
         <g class="agent-station" data-agent="financial-analyst" style="--agent-color:#7359c7" transform="translate(332 66)">
-          <title>财务分析员 · 盈利、现金流与资产质量</title><use href="#agentDesk" width="132" height="104"/>
-          <text class="station-label" x="66" y="118" text-anchor="middle">财务分析</text>
+          <title>Financial Analyst · Earnings, cash flow, and asset quality</title><use href="#agentDesk" width="132" height="104"/>
+          <text class="station-label" x="66" y="118" text-anchor="middle">Financial Analysis</text>
         </g>
         <g class="agent-station" data-agent="valuation-analyst" style="--agent-color:#d86532" transform="translate(489 66)">
-          <title>估值分析员 · 合理价值与目标价</title><use href="#agentDesk" width="132" height="104"/>
-          <text class="station-label" x="66" y="118" text-anchor="middle">估值分析</text>
+          <title>Valuation Analyst · Fair value and target price</title><use href="#agentDesk" width="132" height="104"/>
+          <text class="station-label" x="66" y="118" text-anchor="middle">Valuation</text>
         </g>
 
         <g class="agent-station" data-agent="market-context-collector" style="--agent-color:#d94f52" transform="translate(72 194)">
-          <title>市场上下文采集员 · 热点、叙事与反方信号</title><use href="#agentDesk" width="132" height="104"/>
-          <text class="station-label" x="66" y="118" text-anchor="middle">市场上下文</text>
+          <title>Market Context Collector · Hotspots, narratives, and contrary signals</title><use href="#agentDesk" width="132" height="104"/>
+          <text class="station-label" x="66" y="118" text-anchor="middle">Market Context</text>
         </g>
         <g class="agent-station" data-agent="industry-info-collector" style="--agent-color:#548641" transform="translate(254 194)">
-          <title>行业信息采集员 · 政策、供需与价格证据</title><use href="#agentDesk" width="132" height="104"/>
-          <text class="station-label" x="66" y="118" text-anchor="middle">行业采集</text>
+          <title>Industry Information Collector · Policy, supply-demand, and pricing evidence</title><use href="#agentDesk" width="132" height="104"/>
+          <text class="station-label" x="66" y="118" text-anchor="middle">Industry Data</text>
         </g>
         <g class="agent-station" data-agent="industry-researcher" style="--agent-color:#c85e91" transform="translate(436 194)">
-          <title>行业研究员 · 景气、格局与公司映射</title><use href="#agentDesk" width="132" height="104"/>
-          <text class="station-label" x="66" y="118" text-anchor="middle">行业研究</text>
+          <title>Industry Researcher · Cycle, competition, and company mapping</title><use href="#agentDesk" width="132" height="104"/>
+          <text class="station-label" x="66" y="118" text-anchor="middle">Industry Research</text>
         </g>
 
-        <!-- 调度员位于最前排，桌面更宽并朝向全部工作站。 -->
-        <g class="agent-station orchestrator-station lead" data-agent="orchestrator" style="--agent-color:#d19a22" transform="translate(218 286)">
-          <title>调度员 · 路由、分派、回流与最终交付</title>
+        <!--
+          调度员位于独立的最前排：额外留出一条像素通道，避免头部与中排 Industry Data
+          工位及其标签重叠，同时保持桌面居中并朝向全部工作站。
+        -->
+        <g class="agent-station orchestrator-station lead" data-agent="orchestrator" style="--agent-color:#d19a22" transform="translate(218 330)">
+          <title>Coordinator · Routing, delegation, feedback, and final delivery</title>
           <rect class="command-shadow" x="18" y="67" width="168" height="11"/>
           <rect class="command-desk" x="0" y="39" width="204" height="27"/>
           <rect class="command-panel" x="48" y="24" width="108" height="22"/>
@@ -182,64 +185,64 @@
           <rect class="agent-eye" x="108" y="13" width="4" height="4"/>
           <rect class="agent-shirt" x="83" y="25" width="39" height="21"/>
           <rect class="command-beacon" x="179" y="12" width="12" height="12"/>
-          <text class="orchestrator-label" x="102" y="94" text-anchor="middle">调度员 / ORCHESTRATOR</text>
+          <text class="orchestrator-label" x="102" y="94" text-anchor="middle">COORDINATOR / ORCHESTRATOR</text>
         </g>
       </svg>
     </div>
 
     <section class="path-card">
       <header class="section-head">
-        <div><span class="eyebrow">TASK ROUTE</span><h2>任务路径</h2></div>
-        <span id="pathCount" class="counter">0 项</span>
+        <div><span class="eyebrow">TASK ROUTE</span><h2>Task Route</h2></div>
+        <span id="pathCount" class="counter">0 milestones</span>
       </header>
       <div id="pathViewport" class="path-viewport">
         <svg id="pathLines" class="path-lines" aria-hidden="true"></svg>
-        <div id="pathNodes" class="path-nodes"><div class="empty-state">运行开始后显示任务节点与路径连线</div></div>
+        <div id="pathNodes" class="path-nodes"><div class="empty-state">Route milestones will appear when a run starts.</div></div>
       </div>
     </section>
   </section>
 
-  <aside class="status-rail" aria-label="运行状态侧栏">
+  <aside class="status-rail" aria-label="Run status rail">
     <section class="rail-section run-summary">
       <div class="section-head compact-head">
-        <div><span class="eyebrow">RUN STATUS</span><h2>当前运行</h2></div>
-        <span id="connectionBadge" class="connection-badge" data-status="idle">未连接</span>
+        <div><span class="eyebrow">RUN STATUS</span><h2>Current Run</h2></div>
+        <span id="connectionBadge" class="connection-badge" data-status="idle">Disconnected</span>
       </div>
       <dl class="summary-grid">
         <div><dt>RUN ID</dt><dd id="runId">—</dd></div>
-        <div><dt>状态</dt><dd id="runStatus">空闲</dd></div>
-        <div><dt>模式</dt><dd id="runMode">—</dd></div>
-        <div><dt>事件</dt><dd id="eventCount">0</dd></div>
+        <div><dt>Status</dt><dd id="runStatus">Idle</dd></div>
+        <div><dt>Mode</dt><dd id="runMode">—</dd></div>
+        <div><dt>Events</dt><dd id="eventCount">0</dd></div>
       </dl>
       <div class="summary-actions">
-        <button id="cancelRun" class="text-button danger hidden" type="button">取消运行</button>
-        <button id="copyRun" class="text-button" type="button">复制 run_id</button>
+        <button id="cancelRun" class="text-button danger hidden" type="button">Cancel Run</button>
+        <button id="copyRun" class="text-button" type="button">Copy run_id</button>
       </div>
     </section>
 
     <section id="layerSection" class="rail-section">
-      <div class="section-head compact-head"><div><span class="eyebrow">RESEARCH STATE</span><h2>研究层状态</h2></div></div>
+      <div class="section-head compact-head"><div><span class="eyebrow">RESEARCH STATE</span><h2>Research Layers</h2></div></div>
       <div id="layerList" class="layer-list"></div>
     </section>
 
     <section class="rail-section task-section">
-      <div class="section-head compact-head"><div><span class="eyebrow">LIVE TASKS</span><h2>任务状态</h2></div><span id="taskCount" class="counter">0</span></div>
-      <div id="taskList" class="task-list"><div class="empty-state small">暂无任务</div></div>
+      <div class="section-head compact-head"><div><span class="eyebrow">LIVE TASKS</span><h2>Task Status</h2></div><span id="taskCount" class="counter">0</span></div>
+      <div id="taskList" class="task-list"><div class="empty-state small">No tasks yet</div></div>
     </section>
 
     <details class="rail-section disclosure" open>
-      <summary><span><b>事件</b><small id="latestEvent">等待事件</small></span><span>⌄</span></summary>
-      <div id="eventList" class="event-list"><div class="empty-state small">暂无事件</div></div>
+      <summary><span><b>Events</b><small id="latestEvent">Waiting for events</small></span><span>⌄</span></summary>
+      <div id="eventList" class="event-list"><div class="empty-state small">No events yet</div></div>
     </details>
 
     <details class="rail-section disclosure">
-      <summary><span><b>产物</b><small id="artifactCount">0 个文件</small></span><span>⌄</span></summary>
-      <div id="artifactList" class="artifact-list"><div class="empty-state small">暂无产物</div></div>
+      <summary><span><b>Artifacts</b><small id="artifactCount">0 files</small></span><span>⌄</span></summary>
+      <div id="artifactList" class="artifact-list"><div class="empty-state small">No artifacts yet</div></div>
     </details>
 
     <details id="conclusionSection" class="rail-section disclosure conclusion-section">
-      <summary><span><b>当时结论 / 现在回看</b><small id="conclusionHint">运行完成后显示</small></span><span>⌄</span></summary>
-      <div id="conclusionBody" class="conclusion-body"><div class="empty-state small">暂无结论</div></div>
+      <summary><span><b>Original View / Current Review</b><small id="conclusionHint">Available after completion</small></span><span>⌄</span></summary>
+      <div id="conclusionBody" class="conclusion-body"><div class="empty-state small">No conclusion yet</div></div>
     </details>
   </aside>
 </main>
@@ -247,7 +250,7 @@
 <div id="toastHost" class="toast-host" aria-live="polite"></div>
 <div id="modal" class="modal hidden" role="dialog" aria-modal="true" aria-labelledby="modalTitle">
   <div class="modal-panel">
-    <header><h2 id="modalTitle">产物</h2><button id="modalClose" class="icon-button" type="button" aria-label="关闭">×</button></header>
+    <header><h2 id="modalTitle">Artifact</h2><button id="modalClose" class="icon-button" type="button" aria-label="Close">×</button></header>
     <div id="modalBody" class="modal-body"></div>
   </div>
 </div>

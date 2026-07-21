@@ -107,7 +107,7 @@ button:focus-visible, input:focus-visible, select:focus-visible, summary:focus-v
 }
 .brand { display: flex; align-items: center; gap: 11px; min-width: max-content; }
 .brand > span:last-child { display: flex; flex-direction: column; line-height: 1.05; }
-.brand strong { font-family: "Microsoft YaHei", sans-serif; font-size: 17px; letter-spacing: .08em; }
+.brand strong { font-family: "IBM Plex Sans", "Noto Sans SC", sans-serif; font-size: 17px; letter-spacing: .08em; }
 .brand small { margin-top: 5px; color: var(--ink-faint); font: 700 8px/1 ui-monospace, "Cascadia Code", monospace; letter-spacing: .16em; }
 .brand-mark {
   width: 31px;
@@ -214,12 +214,27 @@ input::placeholder { color: var(--ink-faint); }
 /* ---------- 主布局 ---------- */
 .app-shell {
   display: grid;
-  grid-template-columns: minmax(0, 1fr) 370px;
+  /*
+   * 状态栏承担运行摘要、任务、事件和产物等高密度信息，桌面端需要稳定的阅读宽度。
+   * 使用带上下限的流体宽度，避免超宽屏上主工作区无限扩张，也避免普通屏幕被侧栏挤压。
+   */
+  grid-template-columns: minmax(0, 1fr) clamp(420px, 22vw, 520px);
+  align-items: start;
   gap: 14px;
   min-height: calc(100vh - 152px);
   padding: 14px 22px 22px;
 }
-.workspace { min-width: 0; display: grid; grid-template-rows: minmax(360px, 1.1fr) minmax(260px, .9fr); gap: 14px; }
+.workspace {
+  min-width: 0;
+  align-self: start;
+  display: grid;
+  /*
+   * 左侧工作区不再跟随较长的状态栏拉伸。首屏场景高度受视口约束，
+   * 从而压缩上下空白，并让下方 Task Route 在常见桌面分辨率中直接露出。
+   */
+  grid-template-rows: clamp(400px, 45vh, 520px) minmax(260px, auto);
+  gap: 14px;
+}
 .scene-card, .path-card, .rail-section {
   background: var(--surface);
   border: 1px solid var(--line);
@@ -233,10 +248,11 @@ input::placeholder { color: var(--ink-faint); }
 .scene-card, .path-card { width: 100%; min-width: 0; }
 .scene-card {
   position: relative;
-  min-height: 360px;
+  height: 100%;
+  min-height: 0;
   overflow: hidden;
   display: grid;
-  grid-template-columns: minmax(260px, .75fr) minmax(360px, 1.25fr);
+  grid-template-columns: minmax(300px, .9fr) minmax(360px, 1.1fr);
   align-items: stretch;
 }
 .scene-card::after {
@@ -246,9 +262,25 @@ input::placeholder { color: var(--ink-faint); }
   pointer-events: none;
   background: linear-gradient(120deg, transparent 42%, color-mix(in srgb, var(--accent) 8%, transparent));
 }
-.scene-copy { position: relative; z-index: 2; display: flex; flex-direction: column; justify-content: center; padding: clamp(28px, 5vw, 72px); }
+.scene-copy {
+  position: relative;
+  z-index: 2;
+  display: flex;
+  flex-direction: column;
+  justify-content: center;
+  /* 收紧标题区留白，把视觉重心移向任务状态与下方路线，同时保留像素实验室的展示感。 */
+  padding: clamp(24px, 3vw, 46px);
+}
 .eyebrow { color: var(--ink-faint); font: 800 9px/1 ui-monospace, "Cascadia Code", monospace; letter-spacing: .18em; }
-.scene-copy h1 { max-width: 580px; margin: 15px 0 10px; font-family: "Microsoft YaHei", sans-serif; font-size: clamp(28px, 4vw, 54px); line-height: 1.08; letter-spacing: -.045em; }
+.scene-copy h1 {
+  max-width: 580px;
+  margin: 15px 0 10px;
+  font-family: "Microsoft YaHei", sans-serif;
+  /* 限制超宽字号，避免主栏收窄后英文标题纵向堆叠并挤出场景卡。 */
+  font-size: clamp(28px, 3.2vw, 48px);
+  line-height: 1.08;
+  letter-spacing: -.045em;
+}
 .scene-copy > p { max-width: 600px; margin: 0; color: var(--ink-soft); font-size: 15px; }
 .scene-meta { display: flex; flex-wrap: wrap; align-items: center; gap: 8px 16px; margin-top: 26px; color: var(--ink-faint); font: 600 11px/1.3 ui-monospace, "Cascadia Code", monospace; }
 .status-chip {
@@ -264,7 +296,15 @@ input::placeholder { color: var(--ink-faint); }
 .status-chip[data-status="completed"], .status-chip[data-status="done"], .status-chip[data-status="ready"] { color: var(--good); }
 .status-chip[data-status="partial"], .status-chip[data-status="waiting"], .status-chip[data-status="degraded"] { color: var(--warning); }
 .status-chip[data-status="failed"], .status-chip[data-status="blocked"] { color: var(--critical); }
-.pixel-scene { width: 100%; height: 100%; min-height: 350px; align-self: stretch; color: var(--ink); padding: 18px 22px 18px 0; image-rendering: pixelated; }
+.pixel-scene {
+  width: 100%;
+  height: 100%;
+  min-height: 0;
+  align-self: stretch;
+  color: var(--ink);
+  padding: 14px 18px 14px 0;
+  image-rendering: pixelated;
+}
 .room-wall { fill: var(--pixel-dark); }
 .room-floor { fill: var(--pixel-bg); }
 .room-board, .room-window { fill: var(--pixel-dark); }
@@ -336,7 +376,6 @@ input::placeholder { color: var(--ink-faint); }
   background: var(--surface-raised);
   box-shadow: 6px 6px 0 var(--surface-sunken);
 }
-.path-node:hover { border-color: var(--ink); transform: translateY(-2px); }
 .path-node::before { content: attr(data-index); position: absolute; top: -11px; left: 10px; min-width: 22px; height: 22px; display: grid; place-items: center; border: 1px solid var(--line-strong); border-radius: 2px; color: var(--ink-soft); background: var(--surface); font: 800 9px/1 ui-monospace, monospace; }
 .path-node[data-status="running"], .path-node[data-status="in_progress"] { border-color: var(--blue); box-shadow: 6px 6px 0 color-mix(in srgb, var(--blue) 16%, var(--surface-sunken)); }
 .path-node[data-status="completed"], .path-node[data-status="done"], .path-node[data-status="ready"] { border-color: var(--good); }
@@ -489,17 +528,23 @@ input::placeholder { color: var(--ink-faint); }
 .markdown pre { overflow: auto; padding: 12px; border: 1px solid var(--line); background: var(--surface-sunken); }
 .markdown code { font-family: ui-monospace, monospace; }
 
+@media (max-width: 1600px) {
+  .scene-copy { padding: 28px; }
+  .scene-copy h1 { font-size: clamp(30px, 2.7vw, 42px); }
+}
+
 @media (max-width: 1160px) {
   .topbar { flex-wrap: wrap; gap: 10px; }
   .top-actions { width: 100%; margin-left: 0; }
   .run-picker { flex: 1; }
   .run-picker select { flex: 1; width: auto; }
-  .app-shell { grid-template-columns: minmax(0, 1fr) 330px; }
+  .app-shell { grid-template-columns: minmax(0, 1fr) 360px; }
+  .workspace { grid-template-rows: clamp(380px, 43vh, 470px) minmax(260px, auto); }
   .scene-card { grid-template-columns: 1fr 1fr; }
-  .scene-copy { padding: 34px; }
+  .scene-copy { padding: 30px; }
 }
 
-@media (max-width: 880px) {
+@media (max-width: 1000px) {
   .app-shell { display: flex; flex-direction: column; }
   .workspace { display: flex; flex-direction: column; }
   .status-rail { display: grid; grid-template-columns: 1fr 1fr; }

@@ -1,10 +1,14 @@
 ---
 name: rec
 description: Run the project's company research workflow for one A-share company, reusing local financial report artifacts and dispatching collector, processor, financial analyst, valuation analyst, and market context collector agents as needed.
-argument-hint: "支持两种写法：1) target=<公司名或股票代码> [fiscal_year=YYYY] [depth=...]；2) 自然语言，例如：帮我研究中泰股份，重点看现金流"
+argument-hint: "target=<company name or stock code> [filing_policy=recent_history] [annual_lookback=2] [fiscal_year=YYYY report_type=annual for one pinned filing] [depth=...]"
 ---
 
 # /rec
+
+## English Edition Output Requirement
+
+All coordinator messages, task titles, summaries, agent handoffs, generated artifacts, and the final company research report must be in English. Chinese company names, filing titles, source quotations, and Chinese-market search queries may remain Chinese only as source data, with English explanation. Stable schema keys, enum values, file names, stock codes, URLs, and evidence locators must remain unchanged.
 
 单家公司研究入口。这个 skill 的职责是把公司研究任务按固定链路分派给对应 custom agents：`information-collector`、`information-processor`、`financial-analyst`、`valuation-analyst`、`market-context-collector`。主会话只做调度、回流和汇总，不直接承担这些角色的具体职能。
 
@@ -41,8 +45,10 @@ argument-hint: "支持两种写法：1) target=<公司名或股票代码> [fisca
 ## 参数
 
 - `target`：公司名、股票代码或二者同时提供。
-- `fiscal_year`：财报年度；未指定时先查 manifest 或已有产物，选择最近可用的完整财报年度。
-- `report_type`：默认 `annual`。
+- `fiscal_year`：仅用于显式固定单份财报；未指定时不再退化成“最新一份年报”。
+- `report_type`：仅用于显式固定单份 `annual` / `semiannual` / `q1` / `q3`；未指定时默认 `filing_policy=recent_history`。
+- `filing_policy`：默认 `recent_history`，自动纳入最近两份可得年报、上一年度全部已披露中报，以及截止日前已经披露或已到常规披露截止日的本年度中报；显式固定类型或财年时使用 `single_filing`。
+- `annual_lookback`：近期历史模式保留的可得年报数量，默认 `2`。
 - `depth`：`quick`、`standard`、`deep`，默认 `standard`。
 - `focus`：可选重点，如 `cashflow`、`receivable`、`growth`、`governance`、`capex`、`valuation`、`dividend`。
 - `as_of_date`：全链路知识截止日；未指定时使用当前日期。财报、公告、市场上下文、行情、同行、利率和估值输入只有在可验证日期不晚于该日时才能进入结论。
@@ -68,10 +74,10 @@ argument-hint: "支持两种写法：1) target=<公司名或股票代码> [fisca
 在委派任何 custom agent 之前，必须先运行：
 
 ```bash
-python "research_orchestrator_scripts/audit_company_research_state.py" --target <公司或代码> --report-year <YYYY> --report-type <type> --depth <quick|standard|deep> --focus <focus> --as-of-date <YYYY-MM-DD> --write-state
+python "research_orchestrator_scripts/audit_company_research_state.py" --target <公司或代码> --filing-policy recent_history --annual-lookback 2 --depth <quick|standard|deep> --focus <focus> --as-of-date <YYYY-MM-DD> --write-state
 ```
 
-若用户明确要求重做，再追加 `--force-refresh`。审计器会输出 `research_state`，主会话必须按以下规则调度：
+用户若明确指定单份财报，则改用 `--filing-policy single_filing --report-year <YYYY> --report-type <type>`。若明确要求重做，再追加 `--force-refresh`。审计器会输出 `research_state`，其中 `filings` 是逐份财报状态，`financial_input_fingerprint` 用于约束正式财务分析和估值复用。主会话必须按以下规则调度：
 
 - `status=ready`：默认复用，写入最终回复的“复用产物”和 `skipped_actions`，不得重新委派该层角色。
 - `status=partial` / `missing`：只补缺失子产物；例如只缺 RAG 时只委派 `information-processor` 补 RAG，不重跑 PDF 解析和 digest。
@@ -86,11 +92,11 @@ python "research_orchestrator_scripts/audit_company_research_state.py" --target 
 
 - 检查 `info_collector_scripts/collector_workspace/manifests/cninfo_all_reports.json`
 - 检查 `info_collector_scripts/collector_workspace/reports/...`
-- 确认正式年报、摘要版 PDF、本地路径和缺口
-- 必要时调用：
+- 按 `research_state.filing_plan` 确认最近两份可得年报、上一年度 q1/半年报/q3、以及截止日前已披露或已到常规披露截止日的本年度中报；年报摘要只作为对应年报的可选辅助文件
+- 对每个候选窗口分别调用现有采集器，例如：
 
 ```bash
-python "info_collector_scripts/run_cninfo_collection.py" --start-date <YYYY-MM-DD> --end-date <YYYY-MM-DD> --report-types annual --keyword <stock-code-or-company> --download
+python "info_collector_scripts/run_cninfo_collection.py" --start-date <disclosure-start> --end-date <cutoff-capped-end> --report-types <annual|q1|semiannual|q3> --keyword <stock-code-or-company> --download
 ```
 
 注意：`start-date` / `end-date` 是披露日期窗口，不是财报所属年度；`end-date` 绝不得晚于 `as_of_date`。manifest 中披露日在截止日之后的记录只能进入排除审计，不能下载或复用为本次研究证据。
@@ -106,9 +112,9 @@ python "info_collector_scripts/run_cninfo_collection.py" --start-date <YYYY-MM-D
 - `llm_digest.json`
 - `digest_audit.json`
 - `rag_index/rag_chunks.jsonl`
-- `summary_comparison.json`
+- `summary_comparison.json`（仅当该年报存在摘要 PDF 时必需；q1、半年报、q3 以及无摘要年报均为 `not_applicable`）
 
-它可以按需调用：
+每份财报必须按 `selected_record.announcement_id` 或精确 PDF 路径处理，不能用同财年摘要版、英文版或旧修订版的完整目录替代当前正式版。它可以按需调用：
 
 ```bash
 python "info_processor_scripts/run_pdf_processing.py" --stock-code <code> --report-type annual --report-year <year>
@@ -128,12 +134,11 @@ python "info_processor_scripts/compare_digest_with_summary.py" --content-json <c
 当证据包可用后，正式财务研究判断由 `financial-analyst` custom agent 承担。传给它：
 
 - 公司和证券代码。
-- 财报年度和报告类型。
-- `report_dir`。
-- `content.json`、`llm_digest.json/md`、`rag_chunks.jsonl`、`summary_comparison.json/md`。
-- `analyst_report.json/md` 和 `analyst_audit.json`。
+- `research_state.filings`、`financial_input_fingerprint` 和 `financial_analyst_scripts/analyst_workspace/filing_sets/<stock_code>/<as_of_date>/filing_set.json`。
+- filing set 中每份报告的 `content.json`、`llm_digest.json`、`rag_chunks.jsonl`，以及仅对适用年报存在的 `summary_comparison.json`。
 - 用户指定的 `focus` 和 `depth`。
-- `as_of_date`、来源财报 `published_at` 和正式分析输出目录；正式分析必须写入 `as_of/<as_of_date>/`，并输出 `cutoff_audit`。
+- `as_of_date`、各来源财报 `published_at` 和正式分析输出目录；近期历史模式写入 filing-set 目录，单份模式继续写入 `as_of/<as_of_date>/`。
+- 正式分析必须输出 `source_filings`、`financial_input_fingerprint` 和 `cutoff_audit`；所有页码/chunk 引用必须带 `filing_id` 前缀。
 
 `financial-analyst` 优先回答：
 
@@ -149,6 +154,8 @@ python "info_processor_scripts/compare_digest_with_summary.py" --content-json <c
 如需 evidence draft，`financial-analyst` 可按需调用：
 
 ```bash
+python "financial_analyst_scripts/run_financial_analysis.py" --research-state <research_state.json>
+# Explicit single-filing compatibility:
 python "financial_analyst_scripts/run_financial_analysis.py" --report-dir <report-dir> --analysis-depth <depth>
 ```
 

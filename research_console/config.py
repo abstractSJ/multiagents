@@ -110,8 +110,9 @@ COORDINATOR_TIMEOUT_SECONDS = LLM_WAIT_TIMEOUT_SECONDS
 # 超时负责最终兜底，避免长时间研究任务被 CLI 提前截断。
 COORDINATOR_PRINT_BG_WAIT_CEILING_MS = 0
 # 协调会话运行期间重跑 research_state audit 的间隔。该观察器只读状态并发布事件，
-# 不依据状态自行调度 Agent；真实调度权始终属于同一个 /rec 主会话。
-COORDINATOR_AUDIT_POLL_INTERVAL_SECONDS = 4.0
+# 不依据状态自行调度 Agent；真实调度权始终属于同一个 /rec 主会话。十二秒足以让
+# 前端及时看到层状态变化，同时避免四秒轮询在长研究过程中反复扫描同一批工作区文件。
+COORDINATOR_AUDIT_POLL_INTERVAL_SECONDS = 12.0
 # stream-json 文本增量的最短发布间隔。完整 assistant 消息不受该限制；
 # partial 仅作为 SSE 瞬态预览、内存只保留最新一条且不写 events.jsonl。
 COORDINATOR_PARTIAL_MESSAGE_INTERVAL_SECONDS = 0.5
@@ -121,7 +122,7 @@ COORDINATOR_EVENTS_FILENAME = "claude_events.jsonl"
 # StreamReader 默认 64 KiB 行限制。reader 使用分块读自行组装 NDJSON 行，并把单行
 # 上界设为 128 MiB：足以容纳真实大工具结果，同时避免损坏流导致无界内存增长。
 COORDINATOR_STREAM_LIMIT_BYTES = 128 * 1024 * 1024
-# coordinator_cli 必须能在无人值守的本机控制台里执行完整 /rec。auto 会继续遵守
+# 历史：曾用于 /rec 主会话权限模式。现仅可能被其它 CLI 路径引用。auto 会继续遵守
 # Claude Code 自身安全边界，但不会像 legacy acceptEdits 那样拒绝只读/脚本工具调用。
 COORDINATOR_PERMISSION_MODE = "auto"
 # 进度探针轮询间隔（digest 结果文件数、市场上下文查询缓存数）。
@@ -147,7 +148,10 @@ JSONL_PREVIEW_LINES = 200
 # API 未显式传 llm_mode 时仍保持 manual，避免行业链路或旧客户端行为突变；
 # 公司前端会显式提交 DEFAULT_COMPANY_LLM_MODE。
 DEFAULT_LLM_MODE = "manual"
-DEFAULT_COMPANY_LLM_MODE = "coordinator_cli"
+# 公司默认：Python 主会话 + 注册表 agent（精确 I/O）。Claude Code 主会话 /rec 已移除。
+DEFAULT_COMPANY_LLM_MODE = "python_agent_coordinator"
+# 可选：覆盖 Claude Code 可执行文件（Windows 上建议 native claude.exe 绝对路径）。
+CLAUDE_BIN = os.environ.get("RESEARCH_CONSOLE_CLAUDE_BIN", "")
 ENABLE_CLAUDE_CLI = True
 ENABLE_DEMO = True
 ENABLE_REPLAY = True

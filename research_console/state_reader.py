@@ -24,6 +24,7 @@ from pathlib import Path
 from typing import Any
 
 from research_console import config
+from research_orchestrator_scripts.audit_company_research_state import default_state_output_path
 
 logger = logging.getLogger("research_console.state_reader")
 
@@ -103,6 +104,8 @@ def build_audit_command(params: dict[str, Any], write_state: bool = True) -> lis
         ("company_name", "--company-name"),
         ("report_year", "--report-year"),
         ("report_type", "--report-type"),
+        ("filing_policy", "--filing-policy"),
+        ("annual_lookback", "--annual-lookback"),
         ("depth", "--depth"),
         ("focus", "--focus"),
         ("as_of_date", "--as-of-date"),
@@ -164,7 +167,7 @@ async def terminate_subprocess(proc: Any) -> None:
             )
             await asyncio.wait_for(killer.wait(), config.SUBPROCESS_KILL_GRACE_SECONDS)
         except (OSError, asyncio.TimeoutError):
-            logger.warning("taskkill 清理子进程树失败: pid=%s", proc.pid, exc_info=True)
+            logger.warning("taskkill failed to clean up the subprocess tree: pid=%s", proc.pid, exc_info=True)
         try:
             await asyncio.wait_for(proc.wait(), config.SUBPROCESS_KILL_GRACE_SECONDS)
         except asyncio.TimeoutError:
@@ -212,7 +215,7 @@ async def run_audit(
             env=subprocess_env(),
         )
     except OSError as exc:
-        return None, -1, f"启动 audit 脚本失败: {exc}"
+        return None, -1, f"Failed to start the audit script: {exc}"
     if process_registry is not None:
         process_registry.add(proc)
     try:
@@ -220,7 +223,7 @@ async def run_audit(
             raw, _ = await asyncio.wait_for(proc.communicate(), timeout=config.AUDIT_TIMEOUT_SECONDS)
         except asyncio.TimeoutError:
             await terminate_subprocess(proc)
-            return None, -1, "audit 脚本执行超时"
+            return None, -1, "Audit script timed out"
         except asyncio.CancelledError:
             # 必须先清理进程再把取消继续向上传播；否则外层 finally 移除登记后，
             # run 守护器再也找不到仍在扫描/写状态文件的 audit 子进程。
@@ -262,18 +265,16 @@ def state_file_path(state: dict[str, Any]) -> Path:
     """推导 research_state.json 的默认落盘路径。
 
     功能：
-        与 audit 脚本的 default_state_output_path 规则保持一致：
-        orchestrator_workspace/company_state/<code>/<year>/research_state.json。
+        与 audit 脚本的 default_state_output_path 规则保持一致：近期历史模式使用
+        ``company_state/<code>/<as_of_date>/research_state.json``，单份兼容模式仍使用财年目录。
     参数：
         state: research_state 字典。
     返回值：
         状态文件路径。
     """
-    target = state.get("target", {}) if isinstance(state, dict) else {}
-    request = state.get("request", {}) if isinstance(state, dict) else {}
-    stock_code = str(target.get("stock_code") or request.get("target") or "unknown_target")
-    report_year = str(target.get("report_year") or request.get("report_year") or "unknown_year")
-    return config.ORCHESTRATOR_WORKSPACE / "company_state" / stock_code / report_year / "research_state.json"
+    # 路径写入端负责处理空格、路径分隔符和 ``..``。读取端必须复用同一实现，
+    # 否则英文公司名会出现“实际写入 bank_of_china、事件却指向 bank of china”的分裂。
+    return default_state_output_path(config.PROJECT_ROOT, state)
 
 
 def load_research_state(path: Path) -> dict[str, Any]:
@@ -452,22 +453,33 @@ def build_catalog() -> dict[str, Any]:
     if state_root.exists():
         for state_file in sorted(state_root.glob("*/*/research_state.json")):
             code = state_file.parent.parent.name
-            year = state_file.parent.name
+            scope = state_file.parent.name
             payload = load_json_dict(state_file)
+            target = payload.get("target", {}) if isinstance(payload.get("target"), dict) else {}
+            filing_policy = str(payload.get("filing_policy") or (payload.get("request") or {}).get("filing_policy") or "single_filing")
             states.append(
                 {
                     "stock_code": code,
-                    "report_year": year,
+                    "report_year": str(target.get("report_year") or ""),
+                    "as_of_date": str(payload.get("knowledge_cutoff") or ""),
+                    "filing_policy": filing_policy,
                     "path": str(state_file),
                     "generated_at": str(payload.get("generated_at") or ""),
                 }
             )
-            # 同一公司多个年度时取年度字符串最大的作为最新状态。
+            # 近期历史状态以生成时间判断最新；旧状态没有生成时间时再使用目录作用域兜底。
             prev = latest_state_by_code.get(code)
-            if prev is None or year >= Path(prev).parent.name:
+            prev_payload = load_json_dict(Path(prev)) if prev else {}
+            current_key = (str(payload.get("generated_at") or ""), scope)
+            previous_key = (str(prev_payload.get("generated_at") or ""), Path(prev).parent.name if prev else "")
+            if prev is None or current_key >= previous_key:
                 latest_state_by_code[code] = str(state_file)
-            # 状态文件也把公司纳入 catalog，即使其余层还没有产物。
-            entry(code, year, str(payload.get("target", {}).get("report_type") or "annual"))
+            filings = payload.get("filings") if isinstance(payload.get("filings"), list) else []
+            if filings:
+                for filing in filings:
+                    entry(code, str(filing.get("report_year") or ""), str(filing.get("report_type") or "annual"))
+            else:
+                entry(code, str(target.get("report_year") or scope), str(target.get("report_type") or "annual"))
 
     companies: dict[str, dict[str, Any]] = {}
     for (code, year, rtype), layers in sorted(entries.items()):
@@ -552,9 +564,9 @@ def read_artifact(path_value: str) -> dict[str, Any]:
         raw = config.PROJECT_ROOT / raw
     resolved = raw.resolve()
     if not is_path_allowed(resolved):
-        raise PermissionError(f"路径不在白名单工作区内: {resolved}")
+        raise PermissionError(f"Path is outside the allowlisted workspaces: {resolved}")
     if not resolved.exists() or not resolved.is_file():
-        raise FileNotFoundError(f"文件不存在: {resolved}")
+        raise FileNotFoundError(f"File not found: {resolved}")
 
     stat = resolved.stat()
     suffix = resolved.suffix.lower()
@@ -674,7 +686,18 @@ def _fair_value_number(value: Any) -> float | None:
     if number is not None:
         return number
     if isinstance(value, dict):
-        for key in ("fair_value_cny", "fair_value", "value", "point", "target_price", "price", "mid"):
+        # 新 agent 产物常用 fair_value_per_share；旧报告用 fair_value_cny/value/point。
+        for key in (
+            "fair_value_per_share",
+            "fair_value_cny",
+            "fair_value",
+            "value",
+            "point",
+            "target_price",
+            "price",
+            "mid",
+            "per_share",
+        ):
             number = _as_number(value.get(key))
             if number is not None:
                 return number
@@ -959,13 +982,13 @@ def _string_list(value: Any, limit: int = 5) -> list[str]:
     result: list[str] = []
     seen: set[str] = set()
     preferred_labels = {
-        "assumption": "假设",
-        "description": "说明",
-        "text": "内容",
-        "trigger": "触发条件",
-        "condition": "条件",
-        "revision_action": "调整动作",
-        "action": "动作",
+        "assumption": "Assumption",
+        "description": "Description",
+        "text": "Text",
+        "trigger": "Trigger",
+        "condition": "Condition",
+        "revision_action": "Revision Action",
+        "action": "Action",
     }
 
     def add(text: Any, label: str = "") -> None:
@@ -1017,6 +1040,8 @@ def extract_valuation_summary(report: dict[str, Any], as_of_date: str = "") -> d
         对 valuation_report.json 的关键字段做宽容映射（中英文键名变体、
         数字/字典/区间三种取值形态），取不到的字段置 None，绝不抛异常；
         估值观点输出稳定枚举并保留原始值，同时明确价格观察日和截止状态。
+        同时兼容旧 /rec 产物与 python_agent_coordinator 新 agent 产物：
+        ``fair_value_scenarios`` / ``price_context`` / ``executive_summary.thesis`` 等。
     参数：
         report: valuation_report.json 解析后的字典。
         as_of_date: run 的知识截止日；旧调用方可不传。
@@ -1026,10 +1051,46 @@ def extract_valuation_summary(report: dict[str, Any], as_of_date: str = "") -> d
     """
     if not isinstance(report, dict):
         report = {}
-    snapshot = report.get("market_snapshot") or {}
-    current_price, price_source = _extract_current_price(snapshot)
+    executive = report.get("executive_summary") if isinstance(report.get("executive_summary"), dict) else {}
+    # 现价：旧 market_snapshot；新 agent 常用 price_context / current_market_snapshot。
+    snapshot_candidates = [
+        report.get("market_snapshot"),
+        report.get("current_market_snapshot"),
+        report.get("price_context"),
+        report.get("market_price_snapshot"),
+    ]
+    snapshot: dict[str, Any] = {}
+    current_price: float | None = None
+    price_source = "missing"
+    for candidate in snapshot_candidates:
+        if not isinstance(candidate, dict):
+            continue
+        if not snapshot:
+            snapshot = candidate
+        price, source = _extract_current_price(candidate)
+        if price is not None:
+            snapshot = candidate
+            current_price = price
+            price_source = source
+            break
+    if current_price is None:
+        # 顶层或 executive 里偶发直接给 current_price。
+        for container in (report, executive):
+            if not isinstance(container, dict):
+                continue
+            price = _as_number(container.get("current_price"))
+            if price is not None:
+                current_price = price
+                price_source = str(container.get("price_source") or "report.current_price")
+                break
     market_cap = _extract_market_cap(snapshot)
-    normalized_view, raw_view = _normalize_valuation_view(report.get("valuation_view"))
+    if market_cap is None:
+        market_cap = _as_number(snapshot.get("market_cap_proxy_cny")) or _as_number(
+            snapshot.get("market_cap")
+        )
+
+    raw_view_value = report.get("valuation_view") or executive.get("valuation_view")
+    normalized_view, raw_view = _normalize_valuation_view(raw_view_value)
     price_observation, price_basis, cutoff_status = _extract_price_observation(
         snapshot,
         current_price,
@@ -1037,31 +1098,84 @@ def extract_valuation_summary(report: dict[str, Any], as_of_date: str = "") -> d
         as_of_date or str(report.get("as_of_date") or ""),
     )
 
-    fair_container = (
-        report.get("fair_value_range_per_share")
-        or report.get("fair_value_per_share")
-        or report.get("fair_value_range")
-        or report.get("fair_value")
-        or {}
-    )
-    fair_value: dict[str, Any] = {"bear": None, "base": None, "bull": None, "unit": "元/股"}
+    # 三档合理价值容器：新旧键名一并尝试。
+    fair_container: Any = {}
+    for key in (
+        "fair_value_scenarios",
+        "scenario_fair_values",
+        "scenario_analysis",
+        "fair_value_range_per_share",
+        "fair_value_per_share",
+        "fair_value_range",
+        "fair_value",
+        "overall_fair_value_range_per_share",
+    ):
+        candidate = report.get(key)
+        if isinstance(candidate, dict) and candidate:
+            fair_container = candidate
+            break
+    fair_value: dict[str, Any] = {"bear": None, "base": None, "bull": None, "unit": "CNY/share"}
     if isinstance(fair_container, dict):
         for scenario in ("bear", "base", "bull"):
             fair_value[scenario] = _fair_value_number(_scenario_value(fair_container, scenario))
     if fair_value["base"] is None:
-        fair_value["base"] = _as_number(report.get("base_case_target_price"))
+        # base 目标价：数字 / {value: n} / executive_summary.base_target_price。
+        for raw in (
+            report.get("base_case_target_price"),
+            report.get("base_target_price"),
+            executive.get("base_target_price"),
+        ):
+            number = _fair_value_number(raw)
+            if number is not None:
+                fair_value["base"] = number
+                break
+
+    # 若报告未写 valuation_view，用现价相对基准合理价值推断，避免卡片 Unknown。
+    if normalized_view == "unknown" and current_price and fair_value.get("base"):
+        base_fv = float(fair_value["base"])
+        if base_fv > 0:
+            ratio = current_price / base_fv
+            if ratio <= 0.90:
+                normalized_view, raw_view = "undervalued", "inferred_from_price_vs_base_fv"
+            elif ratio >= 1.10:
+                normalized_view, raw_view = "overvalued", "inferred_from_price_vs_base_fv"
+            else:
+                normalized_view, raw_view = "fair", "inferred_from_price_vs_base_fv"
 
     confidence = report.get("confidence")
     if isinstance(confidence, dict):
         confidence = confidence.get("level") or confidence.get("overall") or confidence.get("value")
     confidence_text = str(confidence).strip() if confidence else None
 
+    one_line = (
+        report.get("one_sentence_conclusion")
+        or report.get("one_line_conclusion")
+        or report.get("conclusion")
+        or executive.get("thesis")
+        or executive.get("one_sentence_conclusion")
+        or executive.get("summary")
+        or ""
+    )
+
+    # upside：优先报告显式字段，再回退到 executive_summary 百分比。
+    upside = _extract_upside(report, fair_value, current_price)
+    if all(upside.get(name) is None for name in ("bear", "base", "bull")):
+        exec_upside = executive.get("upside_downside_vs_current_price")
+        if isinstance(exec_upside, dict):
+            for scenario, alias in (
+                ("bear", "bear_pct"),
+                ("base", "base_pct"),
+                ("bull", "bull_pct"),
+            ):
+                number = _as_number(exec_upside.get(alias) or exec_upside.get(scenario))
+                if number is not None:
+                    # 报告若给的是百分比点数（44.5），统一成小数 0.445。
+                    upside[scenario] = number / 100.0 if abs(number) > 2 else number
+
     return {
         "valuation_view": normalized_view,
         "valuation_view_raw": raw_view,
-        "one_line_conclusion": str(
-            report.get("one_sentence_conclusion") or report.get("one_line_conclusion") or report.get("conclusion") or ""
-        ),
+        "one_line_conclusion": str(one_line),
         "current_price": current_price,
         "market_cap": market_cap,
         "price_source": price_source if current_price is not None else "missing",
@@ -1069,8 +1183,11 @@ def extract_valuation_summary(report: dict[str, Any], as_of_date: str = "") -> d
         "price_basis": price_basis,
         "cutoff_status": cutoff_status,
         "fair_value": fair_value,
-        "upside_downside": _extract_upside(report, fair_value, current_price),
-        "key_assumptions": _string_list(report.get("key_assumptions"), limit=5),
+        "upside_downside": upside,
+        "key_assumptions": _string_list(
+            report.get("key_assumptions") or executive.get("key_assumptions"),
+            limit=5,
+        ),
         # 新旧报告字段并存时合并后去重，输出仍沿用冻结的 valuation_falsifiers 契约。
         "valuation_falsifiers": _string_list(
             [
@@ -1169,11 +1286,11 @@ def build_company_summary(
     }
     for name, status in layer_statuses.items():
         if status and status != "ready":
-            gaps.append(f"{name} 层状态为 {status}")
+            gaps.append(f"{name} layer status is {status}")
     if valuation["current_price"] is None:
-        gaps.append("缺少现价快照，估值结论按替代锚点理解")
+        gaps.append("Current-price snapshot is missing; interpret the valuation using substitute anchors")
     if valuation["cutoff_status"] == "after_cutoff":
-        gaps.append("价格观察日晚于知识截止日，历史冻结时必须降级解释")
+        gaps.append("The price observation date is later than the knowledge cutoff; historical freezing requires a downgraded interpretation")
 
     confidence = valuation["confidence"] or ("low" if gaps else "medium")
 

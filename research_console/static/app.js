@@ -14,58 +14,58 @@
 const API_BASE = '';
 
 const OWNER_NAMES = {
-  orchestrator: '调度官',
-  'information-collector': '信息采集员',
-  'information-processor': '信息处理员',
-  'financial-analyst': '财务分析员',
-  'valuation-analyst': '估值分析员',
-  'market-context-collector': '市场上下文采集员',
-  'industry-info-collector': '行业信息采集员',
-  'industry-researcher': '行业研究员',
+  orchestrator: 'Coordinator',
+  'information-collector': 'Information Collector',
+  'information-processor': 'Information Processor',
+  'financial-analyst': 'Financial Analyst',
+  'valuation-analyst': 'Valuation Analyst',
+  'market-context-collector': 'Market Context Collector',
+  'industry-info-collector': 'Industry Information Collector',
+  'industry-researcher': 'Industry Researcher',
 };
 
 const LAYERS = [
-  ['collector', '采集层'],
-  ['processor', '解析层'],
-  ['financial_evidence_draft', '证据草稿'],
-  ['formal_financial_analysis', '财务分析'],
-  ['valuation', '估值层'],
-  ['market_context', '市场上下文'],
+  ['collector', 'Collection'],
+  ['processor', 'Processing'],
+  ['financial_evidence_draft', 'Evidence Draft'],
+  ['formal_financial_analysis', 'Financial Analysis'],
+  ['valuation', 'Valuation'],
+  ['market_context', 'Market Context'],
 ];
 
 const STATUS = {
-  idle: { icon: '○', label: '空闲', tone: 'neutral' },
-  pending: { icon: '·', label: '待执行', tone: 'neutral' },
-  running: { icon: '↻', label: '执行中', tone: 'info' },
-  in_progress: { icon: '↻', label: '执行中', tone: 'info' },
-  waiting: { icon: '◷', label: '等待', tone: 'warning' },
-  ready: { icon: '✓', label: '就绪', tone: 'good' },
-  done: { icon: '✓', label: '完成', tone: 'good' },
-  completed: { icon: '✓', label: '完成', tone: 'good' },
-  skipped: { icon: '↷', label: '复用/跳过', tone: 'neutral' },
-  partial: { icon: '◐', label: '部分完成', tone: 'warning' },
-  degraded: { icon: '◐', label: '降级完成', tone: 'warning' },
-  stale: { icon: '◷', label: '已过期', tone: 'warning' },
-  missing: { icon: '○', label: '缺失', tone: 'neutral' },
-  incompatible: { icon: '!', label: '不兼容', tone: 'warning' },
-  blocked: { icon: '×', label: '受阻', tone: 'critical' },
-  failed: { icon: '×', label: '失败', tone: 'critical' },
-  cancelled: { icon: '○', label: '已取消', tone: 'neutral' },
-  unknown: { icon: '·', label: '未知', tone: 'neutral' },
+  idle: { icon: '○', label: 'Idle', tone: 'neutral' },
+  pending: { icon: '·', label: 'Pending', tone: 'neutral' },
+  running: { icon: '↻', label: 'Running', tone: 'info' },
+  in_progress: { icon: '↻', label: 'Running', tone: 'info' },
+  waiting: { icon: '◷', label: 'Waiting', tone: 'warning' },
+  ready: { icon: '✓', label: 'Ready', tone: 'good' },
+  done: { icon: '✓', label: 'Completed', tone: 'good' },
+  completed: { icon: '✓', label: 'Completed', tone: 'good' },
+  skipped: { icon: '↷', label: 'Reused / Skipped', tone: 'neutral' },
+  partial: { icon: '◐', label: 'Partially Completed', tone: 'warning' },
+  degraded: { icon: '◐', label: 'Completed with Limitations', tone: 'warning' },
+  stale: { icon: '◷', label: 'Stale', tone: 'warning' },
+  missing: { icon: '○', label: 'Missing', tone: 'neutral' },
+  incompatible: { icon: '!', label: 'Incompatible', tone: 'warning' },
+  blocked: { icon: '×', label: 'Blocked', tone: 'critical' },
+  failed: { icon: '×', label: 'Failed', tone: 'critical' },
+  cancelled: { icon: '○', label: 'Cancelled', tone: 'neutral' },
+  unknown: { icon: '·', label: 'Unknown', tone: 'neutral' },
 };
 
 const VIEW_LABELS = {
-  undervalued: ['低估 · 偏机会', 'good'],
-  under_valued: ['低估 · 偏机会', 'good'],
-  fair: ['大致合理', 'neutral'],
-  fairly_valued: ['大致合理', 'neutral'],
-  fair_valued: ['大致合理', 'neutral'],
-  reasonably_valued: ['大致合理', 'neutral'],
-  overvalued: ['高估 · 偏谨慎', 'critical'],
-  over_valued: ['高估 · 偏谨慎', 'critical'],
-  watch_only: ['仅观察', 'warning'],
-  watchlist_only: ['仅观察', 'warning'],
-  unknown: ['判断未定', 'neutral'],
+  undervalued: ['Undervalued · Opportunity Bias', 'good'],
+  under_valued: ['Undervalued · Opportunity Bias', 'good'],
+  fair: ['Broadly Fair', 'neutral'],
+  fairly_valued: ['Broadly Fair', 'neutral'],
+  fair_valued: ['Broadly Fair', 'neutral'],
+  reasonably_valued: ['Broadly Fair', 'neutral'],
+  overvalued: ['Overvalued · Caution Bias', 'critical'],
+  over_valued: ['Overvalued · Caution Bias', 'critical'],
+  watch_only: ['Watch Only', 'warning'],
+  watchlist_only: ['Watch Only', 'warning'],
+  unknown: ['View Undetermined', 'neutral'],
 };
 
 const state = {
@@ -81,6 +81,8 @@ const state = {
   traceMode: null,
   steps: new Map(),
   stepOrder: [],
+  // 初始 audit 先于 plan_ready 完成时，暂存 step 事件，待固定路线声明后回放。
+  earlyStepPatches: new Map(),
   workItems: new Map(),
   workOrder: [],
   agents: new Map(),
@@ -132,11 +134,11 @@ function statusInfo(value) {
 }
 
 function ownerName(owner) {
-  return OWNER_NAMES[owner] || owner || '调度官';
+  return OWNER_NAMES[owner] || owner || 'Coordinator';
 }
 
 function modeName(mode) {
-  return ({ company: '公司研究', industry: '行业研究', demo: '演示', replay: '回放' })[mode] || mode || '—';
+  return ({ company: 'Company Research', industry: 'Industry Research', demo: 'Demo', replay: 'Replay' })[mode] || mode || '—';
 }
 
 function formatTime(value) {
@@ -266,7 +268,7 @@ function setConnection(status) {
   state.connection = status;
   const badge = $('connectionBadge');
   badge.dataset.status = status;
-  badge.textContent = ({ idle: '未连接', connected: '已连接', reconnecting: '重连中', error: '连接失败' })[status] || status;
+  badge.textContent = ({ idle: 'Disconnected', connected: 'Connected', reconnecting: 'Reconnecting', error: 'Connection Failed' })[status] || status;
 }
 
 function rememberOrder(list, id) {
@@ -283,6 +285,7 @@ function resetRunState() {
   state.traceMode = null;
   state.steps.clear();
   state.stepOrder = [];
+  state.earlyStepPatches.clear();
   state.workItems.clear();
   state.workOrder = [];
   state.agents.clear();
@@ -345,6 +348,12 @@ function applyEvent(event) {
       }
       if (payload.layer_statuses) state.layers = { ...payload.layer_statuses };
       applyMilestones(payload.milestone_states);
+      // python_agent_coordinator 的 initial audit 会在 plan_ready 之前发布完成事件。路线创建后
+      // 必须回放这些补丁，否则 Audit Research State 会永久停留在 Pending。
+      for (const [id, patch] of state.earlyStepPatches.entries()) {
+        if (state.steps.has(id)) updateStep(id, patch);
+      }
+      state.earlyStepPatches.clear();
       break;
 
     case 'work_item_upsert': {
@@ -355,7 +364,7 @@ function applyEvent(event) {
         ...previous,
         ...payload,
         id,
-        title: payload.title || payload.active_form || previous.title || `任务 #${id}`,
+        title: payload.title || payload.active_form || previous.title || `Task #${id}`,
         owner: payload.owner || event.owner || previous.owner || 'orchestrator',
         status: normalizeStatus(payload.status || previous.status || 'pending'),
       });
@@ -371,7 +380,7 @@ function applyEvent(event) {
         ...payload,
         id,
         owner: event.owner || payload.agent_name || 'orchestrator',
-        title: payload.description || `${ownerName(payload.agent_name)} 子任务`,
+        title: payload.description || `${ownerName(payload.agent_name)} subtask`,
         status: 'running',
       });
       rememberOrder(state.agentOrder, id);
@@ -387,7 +396,7 @@ function applyEvent(event) {
         ...payload,
         id,
         owner: event.owner || payload.agent_name || previous.owner || 'orchestrator',
-        title: previous.title || payload.description || `${ownerName(payload.agent_name)} 子任务`,
+        title: previous.title || payload.description || `${ownerName(payload.agent_name)} subtask`,
         status: payload.is_error ? 'failed' : 'completed',
       });
       rememberOrder(state.agentOrder, id);
@@ -414,7 +423,7 @@ function applyEvent(event) {
       updateStep(event.step_id, { progress: payload });
       break;
     case 'step_waiting_llm':
-      updateStep(event.step_id, { status: 'waiting', reason: payload.instructions || '等待 LLM' });
+      updateStep(event.step_id, { status: 'waiting', reason: payload.instructions || 'Waiting for LLM' });
       break;
     case 'step_completed':
       updateStep(event.step_id, { status: payload.degraded ? 'degraded' : 'done', reason: payload.summary || '' });
@@ -429,6 +438,11 @@ function applyEvent(event) {
     case 'state_refreshed':
       if (payload.layer_statuses) state.layers = { ...state.layers, ...payload.layer_statuses };
       applyMilestones(payload.milestone_states);
+      break;
+
+    case 'target_resolved':
+      state.runMeta = state.runMeta || { mode: 'company', params: {} };
+      state.runMeta.params = { ...(state.runMeta.params || {}), ...payload, target: payload.stock_code || state.runMeta.params?.target };
       break;
 
     case 'artifact_created':
@@ -452,12 +466,12 @@ function applyEvent(event) {
       if (state.runMeta?.mode === 'company' && state.runId) refreshDecisionHistory(state.runId);
       if (state.summary) {
         $('conclusionSection').open = true;
-        toast('研究运行已结束，结论已写入侧栏', state.runStatus === 'completed' ? 'good' : 'warning');
+        toast('Research run finished; the conclusion is available in the status rail', state.runStatus === 'completed' ? 'good' : 'warning');
       }
       break;
 
     case 'run_error':
-      toast(`运行诊断：${shortText(payload.error, 160)}`, 'critical', 7000);
+      toast(`Run diagnostic: ${shortText(payload.error, 160)}`, 'critical', 7000);
       break;
 
     default:
@@ -467,11 +481,20 @@ function applyEvent(event) {
   if (!state.batchRender) renderAll();
 }
 
+/**
+ * 只更新 plan_ready 已声明的固定里程碑。
+ * 运行期事件可能携带临时或兼容性 step_id，但这些事件不能扩展或重排 Task Route；
+ * 动态调度活动由 workItems、agents 与 tools 独立承载。
+ */
 function updateStep(id, patch) {
   if (!id) return;
-  const previous = state.steps.get(id) || { id, title: id, owner: 'orchestrator', status: 'pending' };
+  if (!state.steps.has(id)) {
+    const previous = state.earlyStepPatches.get(id) || {};
+    state.earlyStepPatches.set(id, { ...previous, ...patch });
+    return;
+  }
+  const previous = state.steps.get(id);
   state.steps.set(id, { ...previous, ...patch });
-  rememberOrder(state.stepOrder, id);
 }
 
 function applyMilestones(snapshot) {
@@ -492,26 +515,27 @@ function eventDescription(event) {
   const step = event.step_id ? state.steps.get(event.step_id) : null;
   const stepTitle = step ? step.title : event.step_id;
   switch (event.type) {
-    case 'run_started': return `启动${modeName(payload.mode)}`;
-    case 'plan_ready': return `计划就绪，共 ${(payload.steps || []).length} 个步骤`;
-    case 'coordinator_session_started': return '主协调会话已启动';
-    case 'work_item_upsert': return `${payload.title || payload.active_form || '调度任务'} · ${statusInfo(payload.status).label}`;
-    case 'agent_started': return `${ownerName(payload.agent_name)}开始：${payload.description || '子任务'}`;
-    case 'agent_completed': return `${ownerName(payload.agent_name)}${payload.is_error ? '失败' : '完成'}`;
-    case 'tool_activity': return `${ownerName(event.owner || payload.agent_name)} ${payload.phase === 'completed' ? '完成' : '使用'} ${payload.tool_name || '工具'}`;
-    case 'handoff': return `${ownerName(payload.from_owner)} → ${ownerName(payload.to_owner)} · ${payload.label || payload.description || payload.kind || '交接'}`;
-    case 'step_started': return `${stepTitle || '步骤'}开始`;
-    case 'step_progress': return `${stepTitle || '步骤'} ${payload.done || 0}/${payload.total || 0} ${payload.unit || ''}`;
-    case 'step_waiting_llm': return `${stepTitle || '步骤'}等待 LLM`;
-    case 'step_completed': return `${stepTitle || '步骤'}完成${payload.degraded ? '（降级）' : ''}`;
-    case 'step_failed': return `${stepTitle || '步骤'}失败：${shortText(payload.error)}`;
-    case 'step_skipped': return `${stepTitle || '步骤'}跳过：${shortText(payload.reason)}`;
-    case 'artifact_created': return `产出 ${payload.name || payload.path || '文件'}`;
-    case 'backflow': return `回流至${ownerName(payload.to_owner)}：${shortText(payload.reason)}`;
-    case 'state_refreshed': return '研究状态已刷新';
-    case 'run_error': return `运行诊断：${shortText(payload.error)}`;
-    case 'run_completed': return `运行结束：${statusInfo(payload.status).label}`;
-    case 'coordinator_message': return payload.partial ? '协调会话输出中…' : shortText(payload.text, 120);
+    case 'run_started': return `Started ${modeName(payload.mode)}`;
+    case 'plan_ready': return `Plan ready with ${(payload.steps || []).length} steps`;
+    case 'coordinator_session_started': return 'Coordinator session started';
+    case 'work_item_upsert': return `${payload.title || payload.active_form || 'Coordination task'} · ${statusInfo(payload.status).label}`;
+    case 'agent_started': return `${ownerName(payload.agent_name)} started: ${payload.description || 'subtask'}`;
+    case 'agent_completed': return `${ownerName(payload.agent_name)} ${payload.is_error ? 'failed' : 'completed'}`;
+    case 'tool_activity': return `${ownerName(event.owner || payload.agent_name)} ${payload.phase === 'completed' ? 'completed' : 'used'} ${payload.tool_name || 'tool'}`;
+    case 'handoff': return `${ownerName(payload.from_owner)} → ${ownerName(payload.to_owner)} · ${payload.label || payload.description || payload.kind || 'handoff'}`;
+    case 'step_started': return `${stepTitle || 'Step'} started`;
+    case 'step_progress': return `${stepTitle || 'Step'} ${payload.done || 0}/${payload.total || 0} ${payload.unit || ''}`;
+    case 'step_waiting_llm': return `${stepTitle || 'Step'} is waiting for LLM`;
+    case 'step_completed': return `${stepTitle || 'Step'} completed${payload.degraded ? ' with limitations' : ''}`;
+    case 'step_failed': return `${stepTitle || 'Step'} failed: ${shortText(payload.error)}`;
+    case 'step_skipped': return `${stepTitle || 'Step'} skipped: ${shortText(payload.reason)}`;
+    case 'artifact_created': return `Created ${payload.name || payload.path || 'artifact'}`;
+    case 'backflow': return `Returned to ${ownerName(payload.to_owner)}: ${shortText(payload.reason)}`;
+    case 'state_refreshed': return 'Research state refreshed';
+    case 'target_resolved': return `Resolved target: ${payload.company_name || 'Company'} (${payload.stock_code || 'unknown code'}) · FY${payload.report_year || 'unknown'}`;
+    case 'run_error': return `Run diagnostic: ${shortText(payload.error)}`;
+    case 'run_completed': return `Run finished: ${statusInfo(payload.status).label}`;
+    case 'coordinator_message': return payload.partial ? 'Coordinator session is streaming…' : shortText(payload.text, 120);
     default: return event.type;
   }
 }
@@ -524,26 +548,15 @@ function eventTone(event) {
   return 'info';
 }
 
-/** 当前路径优先展示真实调度任务；旧运行则退回静态步骤。 */
-function pathItems() {
-  if (state.workOrder.length) {
-    return state.workOrder.map((id) => {
-      const item = state.workItems.get(id);
-      const activeAgent = [...state.agents.values()].find((agent) => String(agent.work_item_id || '') === id && agent.status === 'running');
-      return item ? {
-        id,
-        title: item.title,
-        owner: item.owner,
-        status: item.status,
-        blockedBy: Array.isArray(item.blocked_by) ? item.blocked_by.map(String) : [],
-        tool: activeAgent?.currentTool || '',
-        detail: item.description || item.active_form || '',
-      } : null;
-    }).filter(Boolean);
-  }
+/**
+ * 按 plan_ready 的声明顺序返回固定路线里程碑。
+ * Task Route 只表达正式研究阶段及其完成状态，不混入运行期临时任务、Agent 调用或工具活动，
+ * 从而保证同一次运行的路线结构不会随协调器的动态调度而改变。
+ */
+function routeMilestones() {
   return state.stepOrder.map((id) => {
     const step = state.steps.get(id);
-    return step ? { ...step, blockedBy: [], tool: '', detail: step.reason || '' } : null;
+    return step ? { ...step, detail: step.reason || '' } : null;
   }).filter(Boolean);
 }
 
@@ -552,7 +565,7 @@ function taskItems() {
   const rows = [];
   for (const id of state.workOrder) {
     const item = state.workItems.get(id);
-    if (item) rows.push({ ...item, kind: '任务' });
+    if (item) rows.push({ ...item, kind: 'Task' });
   }
   for (const id of state.agentOrder) {
     const item = state.agents.get(id);
@@ -561,7 +574,7 @@ function taskItems() {
   if (!rows.length) {
     for (const id of state.stepOrder) {
       const item = state.steps.get(id);
-      if (item) rows.push({ ...item, kind: '步骤' });
+      if (item) rows.push({ ...item, kind: 'Step' });
     }
   }
   return rows;
@@ -580,7 +593,7 @@ function renderAll() {
 
 function renderRunSummary() {
   $('runId').textContent = state.runId || '—';
-  $('runStatus').textContent = state.runStatus ? statusInfo(state.runStatus).label : '空闲';
+  $('runStatus').textContent = state.runStatus ? statusInfo(state.runStatus).label : 'Idle';
   $('runMode').textContent = modeName(state.runMeta?.mode || state.mode);
   $('eventCount').textContent = String(state.events.length);
   $('cancelRun').classList.toggle('hidden', !(state.runId && state.runStatus === 'running'));
@@ -597,20 +610,20 @@ function renderScene() {
   renderAgentRoom(items);
 
   if (!state.runId) {
-    $('sceneTitle').textContent = '调度员与研究团队待命';
-    $('sceneSubtitle').textContent = '前排调度员接收目标，后方七名专业 Agent 在各自工作站完成研究链路。';
-    $('sceneOwner').textContent = '调度官待命';
-    $('sceneTool').textContent = '无活动工具';
+    $('sceneTitle').textContent = 'Coordinator and Research Team Ready';
+    $('sceneSubtitle').textContent = 'Python owns the research plan and dispatches registered agents with explicit input/output contracts; specialists execute only their assigned step.';
+    $('sceneOwner').textContent = 'Coordinator ready';
+    $('sceneTool').textContent = 'No active tool';
     return;
   }
 
   const params = state.runMeta?.params || {};
   const target = params.company_name || params.target || params.stock_code || params.industry_name || '';
   $('sceneTitle').textContent = current ? current.title : `${target || modeName(state.runMeta?.mode)} · ${runInfo.label}`;
-  $('sceneSubtitle').textContent = current?.description || current?.detail || latest?.reason || `当前运行已收到 ${state.events.length} 条状态事件。`;
-  $('sceneOwner').textContent = current ? ownerName(current.owner) : '调度官';
+  $('sceneSubtitle').textContent = current?.description || current?.detail || latest?.reason || `The current run has received ${state.events.length} status events.`;
+  $('sceneOwner').textContent = current ? ownerName(current.owner) : 'Coordinator';
   const activeTool = current?.currentTool || current?.tool || [...state.tools.values()].at(-1)?.tool_name;
-  $('sceneTool').textContent = activeTool ? `工具：${activeTool}` : '无活动工具';
+  $('sceneTool').textContent = activeTool ? `Tool: ${activeTool}` : 'No active tool';
 }
 
 /**
@@ -653,32 +666,28 @@ function renderLayers() {
 
 function renderPath() {
   const host = $('pathNodes');
-  const items = pathItems();
+  const milestones = routeMilestones();
   clear(host);
-  $('pathCount').textContent = `${items.length} 项`;
-  if (!items.length) {
-    host.appendChild(element('div', { class: 'empty-state', text: '运行开始后显示任务节点与路径连线' }));
+  $('pathCount').textContent = `${milestones.length} milestones`;
+  if (!milestones.length) {
+    host.appendChild(element('div', { class: 'empty-state', text: 'Route milestones will appear when a run starts.' }));
     clear($('pathLines'));
     return;
   }
 
-  items.forEach((item, index) => {
-    const info = statusInfo(item.status);
-    const button = element('button', {
-      type: 'button',
+  milestones.forEach((milestone, index) => {
+    const info = statusInfo(milestone.status);
+    host.appendChild(element('div', {
       class: 'path-node',
-      dataset: { id: item.id, index: String(index + 1).padStart(2, '0'), status: normalizeStatus(item.status) },
-      title: item.detail || item.title,
+      dataset: { id: milestone.id, index: String(index + 1).padStart(2, '0'), status: normalizeStatus(milestone.status) },
+      title: milestone.detail || milestone.title,
     }, [
-      element('span', { class: 'node-title', text: item.title }),
-      element('span', { class: 'node-meta', text: `${ownerName(item.owner)}${item.detail ? ` · ${shortText(item.detail, 42)}` : ''}` }),
+      element('span', { class: 'node-title', text: milestone.title }),
+      element('span', { class: 'node-meta', text: `${ownerName(milestone.owner)}${milestone.detail ? ` · ${shortText(milestone.detail, 42)}` : ''}` }),
       element('span', { class: 'node-bottom' }, [
         element('span', { class: 'node-status', text: `${info.icon} ${info.label}` }),
-        item.tool ? element('span', { class: 'node-tool', text: item.tool, title: item.tool }) : null,
       ]),
-    ]);
-    button.addEventListener('click', () => focusTask(item.id));
-    host.appendChild(button);
+    ]));
   });
   window.requestAnimationFrame(() => {
     layoutPathNodes();
@@ -738,16 +747,11 @@ function drawPathLines() {
   svg.style.width = `${width}px`;
   svg.style.height = `${height}px`;
 
-  const itemMap = new Map(pathItems().map((item) => [String(item.id), item]));
-  const nodeMap = new Map(nodes.map((node) => [String(node.dataset.id), node]));
   const namespace = 'http://www.w3.org/2000/svg';
 
   nodes.forEach((targetNode, index) => {
     if (index === 0) return;
-    const targetItem = itemMap.get(String(targetNode.dataset.id));
-    const dependencyId = targetItem?.blockedBy?.find((id) => nodeMap.has(String(id)));
-    const sourceNode = dependencyId ? nodeMap.get(String(dependencyId)) : nodes[index - 1];
-    if (!sourceNode) return;
+    const sourceNode = nodes[index - 1];
 
     const sameRow = sourceNode.dataset.row === targetNode.dataset.row;
     const targetStatus = normalizeStatus(targetNode.dataset.status);
@@ -789,25 +793,18 @@ function drawPathLines() {
   });
 }
 
-function focusTask(id) {
-  const row = [...$('taskList').querySelectorAll('.task-row')].find((node) => node.dataset.id === String(id));
-  if (!row) return;
-  row.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
-  row.animate([{ background: 'var(--accent)' }, { background: 'transparent' }], { duration: 700 });
-}
-
 function renderTasks() {
   const host = $('taskList');
   const items = taskItems();
   clear(host);
   $('taskCount').textContent = String(items.length);
   if (!items.length) {
-    host.appendChild(element('div', { class: 'empty-state small', text: '暂无任务' }));
+    host.appendChild(element('div', { class: 'empty-state small', text: 'No tasks yet' }));
     return;
   }
   for (const item of items) {
     const info = statusInfo(item.status);
-    const meta = [item.kind, ownerName(item.owner), item.currentTool ? `工具 ${item.currentTool}` : '', item.summary || item.reason || ''].filter(Boolean).join(' · ');
+    const meta = [item.kind, ownerName(item.owner), item.currentTool ? `Tool ${item.currentTool}` : '', item.summary || item.reason || ''].filter(Boolean).join(' · ');
     host.appendChild(element('div', { class: 'task-row', dataset: { id: item.id, status: normalizeStatus(item.status) }, title: meta }, [
       element('span', { class: 'task-dot' }),
       element('span', { class: 'task-copy' }, [
@@ -823,9 +820,9 @@ function renderEvents() {
   const host = $('eventList');
   clear(host);
   const visible = state.events.filter((event) => !(event.type === 'coordinator_message' && event.payload?.partial)).slice(-80);
-  $('latestEvent').textContent = visible.length ? shortText(eventDescription(visible.at(-1)), 40) : '等待事件';
+  $('latestEvent').textContent = visible.length ? shortText(eventDescription(visible.at(-1)), 40) : 'Waiting for events';
   if (!visible.length) {
-    host.appendChild(element('div', { class: 'empty-state small', text: '暂无事件' }));
+    host.appendChild(element('div', { class: 'empty-state small', text: 'No events yet' }));
     return;
   }
   for (const event of visible) {
@@ -842,9 +839,9 @@ function renderArtifacts() {
   const host = $('artifactList');
   clear(host);
   const artifacts = [...state.artifacts.values()];
-  $('artifactCount').textContent = `${artifacts.length} 个文件`;
+  $('artifactCount').textContent = `${artifacts.length} files`;
   if (!artifacts.length) {
-    host.appendChild(element('div', { class: 'empty-state small', text: '暂无产物' }));
+    host.appendChild(element('div', { class: 'empty-state small', text: 'No artifacts yet' }));
     return;
   }
   for (const artifact of artifacts) {
@@ -866,48 +863,48 @@ function renderConclusion() {
   const snapshot = state.decision?.snapshot || null;
   const summary = snapshot?.decision || state.summary;
   if (!summary) {
-    $('conclusionHint').textContent = '运行完成后显示';
-    host.appendChild(element('div', { class: 'empty-state small', text: '暂无结论' }));
+    $('conclusionHint').textContent = 'Available after completion';
+    host.appendChild(element('div', { class: 'empty-state small', text: 'No conclusion yet' }));
     return;
   }
 
   const [viewText, tone] = VIEW_LABELS[summary.valuation_view] || VIEW_LABELS.unknown;
-  $('conclusionHint').textContent = `${viewText} · ${state.reviews.length} 次回看`;
+  $('conclusionHint').textContent = `${viewText} · ${state.reviews.length} reviews`;
 
   const decisionPanel = element('section', { class: 'history-panel decision-panel' });
   decisionPanel.appendChild(element('div', { class: 'history-panel-head' }, [
     element('div', {}, [
-      element('span', { class: 'history-kicker', text: '当时结论' }),
-      element('strong', { text: snapshot?.knowledge_cutoff || summary.as_of_date || '基准日 unavailable' }),
+      element('span', { class: 'history-kicker', text: 'Original View' }),
+      element('strong', { text: snapshot?.knowledge_cutoff || summary.as_of_date || 'As-of date unavailable' }),
     ]),
     element('span', {
       class: 'history-state',
-      text: state.decisionStatus === 'frozen' ? '已冻结' : (state.decisionStatus === 'derived' ? '旧运行派生' : '运行摘要'),
+      text: state.decisionStatus === 'frozen' ? 'Frozen' : (state.decisionStatus === 'derived' ? 'Derived from Legacy Run' : 'Run Summary'),
     }),
   ]));
   decisionPanel.appendChild(element('span', { class: 'conclusion-view', dataset: { tone }, text: viewText }));
-  decisionPanel.appendChild(element('h3', { text: summary.one_line_conclusion || `${summary.company_name || summary.stock_code || '研究'}已完成` }));
+  decisionPanel.appendChild(element('h3', { text: summary.one_line_conclusion || `${summary.company_name || summary.stock_code || 'Research'} completed` }));
 
   const observation = summary.price_observation || {};
   if (summary.current_price != null) {
     const observationDate = observation.observation_date || summary.as_of_date || '';
     decisionPanel.appendChild(element('p', {
-      text: `基准价：${formatNumber(summary.current_price)}${observationDate ? ` · 观察日 ${observationDate}` : ''}${summary.price_source ? ` · 来源 ${summary.price_source}` : ''}`,
+      text: `Baseline price: ${formatNumber(summary.current_price)}${observationDate ? ` · Observation date ${observationDate}` : ''}${summary.price_source ? ` · Source ${summary.price_source}` : ''}`,
     }));
   } else {
-    decisionPanel.appendChild(element('p', { class: 'unavailable', text: '基准价：unavailable' }));
+    decisionPanel.appendChild(element('p', { class: 'unavailable', text: 'Baseline price: unavailable' }));
   }
   if (summary.cutoff_status && summary.cutoff_status !== 'unknown') {
-    decisionPanel.appendChild(element('p', { text: `价格截止状态：${cutoffLabel(summary.cutoff_status)}` }));
+    decisionPanel.appendChild(element('p', { text: `Price cutoff status: ${cutoffLabel(summary.cutoff_status)}` }));
   }
   if (summary.valuation_view_raw && summary.valuation_view_raw !== summary.valuation_view) {
-    decisionPanel.appendChild(element('p', { text: `估值观点原始值：${summary.valuation_view_raw}` }));
+    decisionPanel.appendChild(element('p', { text: `Raw valuation view: ${summary.valuation_view_raw}` }));
   }
 
   const fairValue = summary.fair_value || {};
   if ([fairValue.bear, fairValue.base, fairValue.bull].some((value) => value != null)) {
     const grid = element('div', { class: 'value-grid' });
-    for (const [key, label] of [['bear', '悲观'], ['base', '基准'], ['bull', '乐观']]) {
+    for (const [key, label] of [['bear', 'Bear'], ['base', 'Base'], ['bull', 'Bull']]) {
       grid.appendChild(element('div', {}, [
         element('small', { text: label }),
         element('strong', { text: fairValue[key] == null ? 'unavailable' : `${formatNumber(fairValue[key])}${fairValue.unit ? ` ${fairValue.unit}` : ''}` }),
@@ -915,15 +912,15 @@ function renderConclusion() {
     }
     decisionPanel.appendChild(grid);
   }
-  if (summary.confidence) decisionPanel.appendChild(element('p', { text: `置信度：${summary.confidence}` }));
-  if (Array.isArray(summary.gaps) && summary.gaps.length) decisionPanel.appendChild(element('p', { text: `缺口：${summary.gaps.join('；')}` }));
+  if (summary.confidence) decisionPanel.appendChild(element('p', { text: `Confidence: ${summary.confidence}` }));
+  if (Array.isArray(summary.gaps) && summary.gaps.length) decisionPanel.appendChild(element('p', { text: `Gaps: ${summary.gaps.join('; ')}` }));
   host.appendChild(decisionPanel);
 
   const reviewPanel = element('section', { class: 'history-panel review-panel' });
   reviewPanel.appendChild(element('div', { class: 'history-panel-head' }, [
     element('div', {}, [
-      element('span', { class: 'history-kicker', text: '现在回看' }),
-      element('strong', { text: state.reviews.length ? `${state.reviews.length} 条记录` : '尚未创建' }),
+      element('span', { class: 'history-kicker', text: 'Current Review' }),
+      element('strong', { text: state.reviews.length ? `${state.reviews.length} records` : 'Not created yet' }),
     ]),
   ]));
 
@@ -931,17 +928,17 @@ function renderConclusion() {
   if (latest) {
     reviewPanel.appendChild(renderReview(latest));
   } else {
-    reviewPanel.appendChild(element('p', { class: 'unavailable', text: '当前回看：unavailable。选择回看日后可用本地行情生成描述性对照。' }));
+    reviewPanel.appendChild(element('p', { class: 'unavailable', text: 'Current review: unavailable. Select a review date to generate a descriptive comparison using local market data.' }));
   }
   if (state.reviewWarnings.length) {
-    reviewPanel.appendChild(element('p', { class: 'history-warning', text: `读取警告：${state.reviewWarnings.join('；')}` }));
+    reviewPanel.appendChild(element('p', { class: 'history-warning', text: `Read warnings: ${state.reviewWarnings.join('; ')}` }));
   }
   reviewPanel.appendChild(buildReviewForm());
   host.appendChild(reviewPanel);
 }
 
 function cutoffLabel(value) {
-  return ({ at_cutoff: '与知识截止日一致', before_cutoff: '早于知识截止日', after_cutoff: '晚于知识截止日', unknown: '未知' })[value] || value;
+  return ({ at_cutoff: 'Matches knowledge cutoff', before_cutoff: 'Before knowledge cutoff', after_cutoff: 'After knowledge cutoff', unknown: 'Unknown' })[value] || value;
 }
 
 function formatPercent(value) {
@@ -950,16 +947,16 @@ function formatPercent(value) {
 }
 
 function priceObservationText(label, observation) {
-  if (!observation || observation.status !== 'available' || observation.close_price == null) return `${label}：unavailable`;
-  return `${label}：${formatNumber(observation.close_price)} · ${observation.observation_date || '日期 unavailable'} · ${observation.source || '来源 unavailable'}`;
+  if (!observation || observation.status !== 'available' || observation.close_price == null) return `${label}: unavailable`;
+  return `${label}: ${formatNumber(observation.close_price)} · ${observation.observation_date || 'Date unavailable'} · ${observation.source || 'Source unavailable'}`;
 }
 
 function valuationBucketLabel(value) {
   return ({
-    below_bear: '低于悲观值',
-    bear_to_base: '悲观—基准区间',
-    base_to_bull: '基准—乐观区间',
-    above_bull: '高于乐观值',
+    below_bear: 'Below Bear Case',
+    bear_to_base: 'Bear-to-Base Range',
+    base_to_bull: 'Base-to-Bull Range',
+    above_bull: 'Above Bull Case',
   })[value] || 'unavailable';
 }
 
@@ -970,42 +967,42 @@ function renderReview(review) {
   const bucket = metrics.valuation_bucket || {};
   const distances = bucket.distances_to_points || {};
   const block = element('div', { class: 'review-result' });
-  block.appendChild(element('p', { class: 'review-date', text: `回看日 ${review.review_date || 'unavailable'} · 间隔 ${metrics.elapsed_days ?? 'unavailable'} 天` }));
-  block.appendChild(element('p', { text: priceObservationText('基准价格', stock.baseline) }));
-  block.appendChild(element('p', { text: priceObservationText('回看价格', stock.current) }));
+  block.appendChild(element('p', { class: 'review-date', text: `Review date ${review.review_date || 'unavailable'} · ${metrics.elapsed_days ?? 'unavailable'} days elapsed` }));
+  block.appendChild(element('p', { text: priceObservationText('Baseline Price', stock.baseline) }));
+  block.appendChild(element('p', { text: priceObservationText('Review Price', stock.current) }));
   for (const warning of stock.basis_warnings || []) {
-    block.appendChild(element('p', { class: 'history-warning', text: `价格口径提示：${warning}` }));
+    block.appendChild(element('p', { class: 'history-warning', text: `Price basis note: ${warning}` }));
   }
   block.appendChild(element('div', { class: 'review-metrics' }, [
-    element('div', {}, [element('small', { text: '股价变化' }), element('strong', { text: formatPercent(metrics.spot_price_change) })]),
-    element('div', {}, [element('small', { text: '估值区间' }), element('strong', { text: bucket.status === 'available' ? valuationBucketLabel(bucket.bucket) : 'unavailable' })]),
-    element('div', {}, [element('small', { text: '距基准点' }), element('strong', { text: distances.base ? formatPercent(distances.base.pct) : 'unavailable' })]),
+    element('div', {}, [element('small', { text: 'Share Price Change' }), element('strong', { text: formatPercent(metrics.spot_price_change) })]),
+    element('div', {}, [element('small', { text: 'Valuation Range' }), element('strong', { text: bucket.status === 'available' ? valuationBucketLabel(bucket.bucket) : 'unavailable' })]),
+    element('div', {}, [element('small', { text: 'Distance to Base' }), element('strong', { text: distances.base ? formatPercent(distances.base.pct) : 'unavailable' })]),
   ]));
   if (bucket.status === 'available') {
     block.appendChild(element('p', {
-      text: `距三档点：悲观 ${formatPercent(distances.bear?.pct)} · 基准 ${formatPercent(distances.base?.pct)} · 乐观 ${formatPercent(distances.bull?.pct)}`,
+      text: `Distance to cases: Bear ${formatPercent(distances.bear?.pct)} · Base ${formatPercent(distances.base?.pct)} · Bull ${formatPercent(distances.bull?.pct)}`,
     }));
   } else if (bucket.reason) {
-    block.appendChild(element('p', { class: 'unavailable', text: `估值区间 unavailable：${bucket.reason}` }));
+    block.appendChild(element('p', { class: 'unavailable', text: `Valuation range unavailable: ${bucket.reason}` }));
   }
   if (review.benchmark_code) {
-    block.appendChild(element('p', { text: priceObservationText(`基准 ${review.benchmark_code} 起点`, benchmark.baseline) }));
-    block.appendChild(element('p', { text: priceObservationText(`基准 ${review.benchmark_code} 终点`, benchmark.current) }));
-    block.appendChild(element('p', { text: `基准变化 ${formatPercent(metrics.benchmark_change)} · 超额 ${formatPercent(metrics.excess_return)}` }));
+    block.appendChild(element('p', { text: priceObservationText(`Benchmark ${review.benchmark_code} Start`, benchmark.baseline) }));
+    block.appendChild(element('p', { text: priceObservationText(`Benchmark ${review.benchmark_code} End`, benchmark.current) }));
+    block.appendChild(element('p', { text: `Benchmark change ${formatPercent(metrics.benchmark_change)} · Excess return ${formatPercent(metrics.excess_return)}` }));
     for (const warning of benchmark.basis_warnings || []) {
-      block.appendChild(element('p', { class: 'history-warning', text: `基准口径提示：${warning}` }));
+      block.appendChild(element('p', { class: 'history-warning', text: `Benchmark basis note: ${warning}` }));
     }
   }
-  const falsificationLabels = { unknown: '未知', held: '证伪条件未触发', breached: '证伪条件已触发' };
+  const falsificationLabels = { unknown: 'Unknown', held: 'Falsification Conditions Not Triggered', breached: 'Falsification Conditions Triggered' };
   block.appendChild(element('p', {
     class: `falsification-status ${review.falsification_status || 'unknown'}`,
-    text: `证伪状态：${falsificationLabels[review.falsification_status] || '未知'}`,
+    text: `Falsification status: ${falsificationLabels[review.falsification_status] || 'Unknown'}`,
   }));
-  if (review.falsification_notes) block.appendChild(element('p', { class: 'review-note', text: `证伪说明：${review.falsification_notes}` }));
-  if (review.note) block.appendChild(element('p', { class: 'review-note', text: `备注：${review.note}` }));
+  if (review.falsification_notes) block.appendChild(element('p', { class: 'review-note', text: `Falsification notes: ${review.falsification_notes}` }));
+  if (review.note) block.appendChild(element('p', { class: 'review-note', text: `Notes: ${review.note}` }));
   const limitations = Array.isArray(review.limitations) && review.limitations.length
     ? review.limitations
-    : ['股价变化不是股东总回报（TSR）。', '回看是描述性对照，不构成因果归因。'];
+    : ['Share price change is not total shareholder return (TSR).', 'The review is a descriptive comparison and does not establish causality.'];
   block.appendChild(element('div', { class: 'history-limitations' }, limitations.map((item) => element('p', { text: item }))));
   return block;
 }
@@ -1021,45 +1018,45 @@ function optionalNumber(input) {
 function buildReviewForm() {
   const form = element('form', { class: 'review-form' });
   const dateInput = element('input', { type: 'date', name: 'review_date', value: todayLocal(), required: 'required' });
-  const currentPrice = element('input', { type: 'number', name: 'current_price', min: '0', step: 'any', placeholder: '本地缺失时填写' });
+  const currentPrice = element('input', { type: 'number', name: 'current_price', min: '0', step: 'any', placeholder: 'Enter if local data is unavailable' });
   const currentDate = element('input', { type: 'date', name: 'current_price_date' });
-  const currentSource = element('input', { type: 'text', name: 'current_price_source', placeholder: '例如券商收盘截图', maxlength: '500' });
-  const benchmarkCode = element('input', { type: 'text', name: 'benchmark_code', placeholder: '例如 000300', maxlength: '32' });
-  const benchmarkBaselinePrice = element('input', { type: 'number', name: 'benchmark_baseline_price', min: '0', step: 'any', placeholder: '本地缺失时填写' });
+  const currentSource = element('input', { type: 'text', name: 'current_price_source', placeholder: 'e.g. broker closing-price screenshot', maxlength: '500' });
+  const benchmarkCode = element('input', { type: 'text', name: 'benchmark_code', placeholder: 'e.g. 000300', maxlength: '32' });
+  const benchmarkBaselinePrice = element('input', { type: 'number', name: 'benchmark_baseline_price', min: '0', step: 'any', placeholder: 'Enter if local data is unavailable' });
   const benchmarkBaselineDate = element('input', { type: 'date', name: 'benchmark_baseline_date' });
-  const benchmarkBaselineSource = element('input', { type: 'text', name: 'benchmark_baseline_source', placeholder: '基准起点来源', maxlength: '500' });
-  const benchmarkCurrentPrice = element('input', { type: 'number', name: 'benchmark_current_price', min: '0', step: 'any', placeholder: '本地缺失时填写' });
+  const benchmarkBaselineSource = element('input', { type: 'text', name: 'benchmark_baseline_source', placeholder: 'Benchmark start source', maxlength: '500' });
+  const benchmarkCurrentPrice = element('input', { type: 'number', name: 'benchmark_current_price', min: '0', step: 'any', placeholder: 'Enter if local data is unavailable' });
   const benchmarkCurrentDate = element('input', { type: 'date', name: 'benchmark_current_date' });
-  const benchmarkCurrentSource = element('input', { type: 'text', name: 'benchmark_current_source', placeholder: '基准终点来源', maxlength: '500' });
+  const benchmarkCurrentSource = element('input', { type: 'text', name: 'benchmark_current_source', placeholder: 'Benchmark end source', maxlength: '500' });
   const falsificationStatus = element('select', { name: 'falsification_status' }, [
-    element('option', { value: 'unknown', text: '未知' }),
-    element('option', { value: 'held', text: '未触发' }),
-    element('option', { value: 'breached', text: '已触发' }),
+    element('option', { value: 'unknown', text: 'Unknown' }),
+    element('option', { value: 'held', text: 'Not Triggered' }),
+    element('option', { value: 'breached', text: 'Triggered' }),
   ]);
-  const falsificationNotes = element('textarea', { name: 'falsification_notes', placeholder: '说明哪些证伪条件已验证或触发', maxlength: '4000' });
-  const noteInput = element('textarea', { name: 'note', placeholder: '可选回看备注', maxlength: '2000' });
-  const button = element('button', { type: 'submit', class: 'button secondary', text: state.reviewSubmitting ? '生成中…' : '创建回看' });
+  const falsificationNotes = element('textarea', { name: 'falsification_notes', placeholder: 'Describe which falsification conditions were tested or triggered', maxlength: '4000' });
+  const noteInput = element('textarea', { name: 'note', placeholder: 'Optional review notes', maxlength: '2000' });
+  const button = element('button', { type: 'submit', class: 'button secondary', text: state.reviewSubmitting ? 'Generating…' : 'Create Review' });
   button.disabled = state.reviewSubmitting || !state.runId || state.runMeta?.mode !== 'company';
 
   form.append(
-    element('div', { class: 'review-form-title', text: '回看设置' }),
-    reviewFormField('回看日期', dateInput),
-    element('div', { class: 'review-form-title', text: '当前价格手工补数（本地缺失时使用）' }),
-    reviewFormField('当前价格', currentPrice),
-    reviewFormField('价格日期', currentDate),
-    reviewFormField('价格来源', currentSource),
-    element('div', { class: 'review-form-title', text: '可选 benchmark 与手工补数' }),
-    reviewFormField('基准代码', benchmarkCode),
-    reviewFormField('基准起点价格', benchmarkBaselinePrice),
-    reviewFormField('基准起点日期', benchmarkBaselineDate),
-    reviewFormField('基准起点来源', benchmarkBaselineSource),
-    reviewFormField('基准终点价格', benchmarkCurrentPrice),
-    reviewFormField('基准终点日期', benchmarkCurrentDate),
-    reviewFormField('基准终点来源', benchmarkCurrentSource),
-    element('div', { class: 'review-form-title', text: '证伪检查' }),
-    reviewFormField('证伪状态', falsificationStatus),
-    reviewFormField('证伪说明', falsificationNotes),
-    reviewFormField('其他备注', noteInput),
+    element('div', { class: 'review-form-title', text: 'Review Settings' }),
+    reviewFormField('Review Date', dateInput),
+    element('div', { class: 'review-form-title', text: 'Manual Current Price (when local data is unavailable)' }),
+    reviewFormField('Current Price', currentPrice),
+    reviewFormField('Price Date', currentDate),
+    reviewFormField('Price Source', currentSource),
+    element('div', { class: 'review-form-title', text: 'Optional Benchmark and Manual Inputs' }),
+    reviewFormField('Benchmark Code', benchmarkCode),
+    reviewFormField('Benchmark Start Price', benchmarkBaselinePrice),
+    reviewFormField('Benchmark Start Date', benchmarkBaselineDate),
+    reviewFormField('Benchmark Start Source', benchmarkBaselineSource),
+    reviewFormField('Benchmark End Price', benchmarkCurrentPrice),
+    reviewFormField('Benchmark End Date', benchmarkCurrentDate),
+    reviewFormField('Benchmark End Source', benchmarkCurrentSource),
+    element('div', { class: 'review-form-title', text: 'Falsification Check' }),
+    reviewFormField('Falsification Status', falsificationStatus),
+    reviewFormField('Falsification Notes', falsificationNotes),
+    reviewFormField('Additional Notes', noteInput),
     button,
   );
   form.addEventListener('submit', async (event) => {
@@ -1087,22 +1084,22 @@ function buildReviewForm() {
 
 function formatNumber(value) {
   const number = Number(value);
-  return Number.isFinite(number) ? number.toLocaleString('zh-CN', { maximumFractionDigits: 2 }) : '—';
+  return Number.isFinite(number) ? number.toLocaleString('en-US', { maximumFractionDigits: 2 }) : '—';
 }
 
 async function openArtifact(artifact) {
   $('modalTitle').textContent = artifact.name;
   clear($('modalBody'));
-  $('modalBody').appendChild(element('div', { class: 'empty-state', text: '正在加载产物…' }));
+  $('modalBody').appendChild(element('div', { class: 'empty-state', text: 'Loading artifact…' }));
   $('modal').classList.remove('hidden');
   try {
     const data = await api.artifact(artifact.path);
     clear($('modalBody'));
     $('modalBody').appendChild(element('div', { class: 'artifact-meta' }, [
-      element('span', { text: `类型 ${data.kind}` }),
-      data.size != null ? element('span', { text: `大小 ${formatBytes(data.size)}` }) : null,
-      data.mtime ? element('span', { text: `修改 ${data.mtime}` }) : null,
-      data.truncated ? element('span', { text: '内容已截断' }) : null,
+      element('span', { text: `Type ${data.kind}` }),
+      data.size != null ? element('span', { text: `Size ${formatBytes(data.size)}` }) : null,
+      data.mtime ? element('span', { text: `Modified ${data.mtime}` }) : null,
+      data.truncated ? element('span', { text: 'Content truncated' }) : null,
     ]));
     const content = data.content;
     if (data.kind === 'json' || data.kind === 'jsonl') {
@@ -1110,13 +1107,13 @@ async function openArtifact(artifact) {
     } else if (data.kind === 'md') {
       $('modalBody').appendChild(renderMarkdown(String(content || '')));
     } else if (data.kind === 'pdf') {
-      $('modalBody').appendChild(element('p', { text: `PDF 仅显示元信息，请在文件系统中打开：${data.path}` }));
+      $('modalBody').appendChild(element('p', { text: `Only PDF metadata is shown. Open the file from the filesystem: ${data.path}` }));
     } else {
       $('modalBody').appendChild(element('pre', { class: 'artifact-pre', text: String(content || '') }));
     }
   } catch (error) {
     clear($('modalBody'));
-    $('modalBody').appendChild(element('div', { class: 'empty-state', text: `加载失败：${error.message}` }));
+    $('modalBody').appendChild(element('div', { class: 'empty-state', text: `Load failed: ${error.message}` }));
   }
 }
 
@@ -1193,14 +1190,14 @@ async function refreshDecisionHistory(runId, { quiet = false } = {}) {
     state.decisionStatus = decisionResult.value.status || null;
     state.reviewWarnings = [...(decisionResult.value.warnings || [])];
   } else if (!quiet && decisionResult.reason?.body?.status !== 'summary_unavailable') {
-    toast(`历史决策加载失败：${decisionResult.reason.message}`, 'warning');
+    toast(`Historical decision failed to load: ${decisionResult.reason.message}`, 'warning');
   }
 
   if (reviewsResult.status === 'fulfilled') {
     state.reviews = reviewsResult.value.reviews || [];
     state.reviewWarnings = [...state.reviewWarnings, ...(reviewsResult.value.warnings || [])];
   } else if (!quiet) {
-    toast(`回看记录加载失败：${reviewsResult.reason.message}`, 'warning');
+    toast(`Review records failed to load: ${reviewsResult.reason.message}`, 'warning');
   }
   renderConclusion();
 }
@@ -1214,9 +1211,9 @@ async function createDecisionReview(body) {
     state.reviewWarnings = response.warnings || [];
     await refreshDecisionHistory(state.runId, { quiet: true });
     await refreshRuns();
-    toast('现在回看已保存', 'good');
+    toast('Current review saved', 'good');
   } catch (error) {
-    toast(`创建回看失败：${error.message}`, 'critical', 6000);
+    toast(`Failed to create review: ${error.message}`, 'critical', 6000);
   } finally {
     state.reviewSubmitting = false;
     renderConclusion();
@@ -1229,19 +1226,19 @@ async function refreshRuns() {
     state.runs = response.runs || [];
     renderRunSelect();
   } catch (error) {
-    toast(`运行历史加载失败：${error.message}`, 'critical');
+    toast(`Run history failed to load: ${error.message}`, 'critical');
   }
 }
 
 function renderRunSelect() {
   const select = $('runSelect');
   clear(select);
-  select.appendChild(element('option', { value: '', text: state.runs.length ? '选择历史运行' : '暂无运行' }));
+  select.appendChild(element('option', { value: '', text: state.runs.length ? 'Select a historical run' : 'No runs yet' }));
   for (const run of state.runs) {
     const target = run.params?.company_name || run.params?.target || run.params?.stock_code || run.params?.industry_name || '';
     const info = statusInfo(run.status);
     const historyText = run.mode === 'company'
-      ? ` · 基准 ${run.baseline_date || 'unavailable'} · 回看 ${run.review_count || 0}`
+      ? ` · Baseline ${run.baseline_date || 'unavailable'} · Reviews ${run.review_count || 0}`
       : '';
     select.appendChild(element('option', {
       value: run.run_id,
@@ -1277,7 +1274,7 @@ async function loadRun(runId) {
   } catch (error) {
     state.batchRender = false;
     setConnection('error');
-    toast(`运行加载失败：${error.message}`, 'critical');
+    toast(`Run failed to load: ${error.message}`, 'critical');
   }
 }
 
@@ -1286,15 +1283,15 @@ async function startRun(mode, llmMode, params) {
     const response = await api.createRun({ mode, llm_mode: llmMode, params });
     await refreshRuns();
     await loadRun(response.run_id);
-    toast(`已启动${modeName(mode)}`, 'good');
+    toast(`Started ${modeName(mode)}`, 'good');
   } catch (error) {
     const existingId = error.status === 409 && error.body?.existing_run_id;
     if (existingId) {
-      toast('同一目标已有运行，已接回现有任务', 'warning');
+      toast('A run for the same target already exists; reconnected to the active task', 'warning');
       await loadRun(existingId);
       return;
     }
-    toast(`启动失败：${error.message}`, 'critical', 6000);
+    toast(`Failed to start: ${error.message}`, 'critical', 6000);
   }
 }
 
@@ -1303,7 +1300,9 @@ function companyParams() {
   const params = {
     target,
     report_year: $('companyYear').value ? Number($('companyYear').value) : undefined,
-    report_type: $('companyReport').value,
+    report_type: $('companyReport').value || undefined,
+    filing_policy: $('companyReport').value ? 'single_filing' : 'recent_history',
+    annual_lookback: 2,
     depth: $('companyDepth').value,
     focus: $('companyFocus').value.trim() || undefined,
     as_of_date: $('companyDate').value || todayLocal(),
@@ -1341,10 +1340,10 @@ function switchMode(mode) {
 async function runAudit() {
   const params = companyParams();
   if (!params.target) {
-    toast('请先填写公司或股票代码', 'warning');
+    toast('Enter a company name or stock code first', 'warning');
     return;
   }
-  toast('正在读取研究状态…', 'info', 1800);
+  toast('Reading research state…', 'info', 1800);
   try {
     const result = await api.audit(params);
     state.layers = {};
@@ -1353,9 +1352,9 @@ async function runAudit() {
     }
     renderLayers();
     const ready = Object.values(state.layers).filter((value) => value === 'ready').length;
-    toast(`体检完成：${ready} 层就绪`, 'good');
+    toast(`Audit complete: ${ready} layers ready`, 'good');
   } catch (error) {
-    toast(`体检失败：${error.message}`, 'critical');
+    toast(`Audit failed: ${error.message}`, 'critical');
   }
 }
 
@@ -1367,12 +1366,12 @@ function toggleTheme() {
 
 async function copyRunId() {
   if (!state.runId) {
-    toast('当前没有 run_id', 'warning');
+    toast('No run_id is currently selected', 'warning');
     return;
   }
   try {
     await navigator.clipboard.writeText(state.runId);
-    toast('run_id 已复制', 'good', 1800);
+    toast('run_id copied', 'good', 1800);
   } catch (error) {
     toast(`run_id：${state.runId}`, 'info', 5000);
   }
@@ -1397,9 +1396,9 @@ function bindEvents() {
     if (!state.runId) return;
     try {
       await api.cancel(state.runId);
-      toast('已请求取消运行', 'warning');
+      toast('Run cancellation requested', 'warning');
     } catch (error) {
-      toast(`取消失败：${error.message}`, 'critical');
+      toast(`Cancellation failed: ${error.message}`, 'critical');
     }
   });
 
@@ -1449,15 +1448,15 @@ function renderHealth() {
   const badge = $('healthBadge');
   if (!state.health) {
     badge.dataset.tone = 'critical';
-    badge.querySelector('span').textContent = '服务不可用';
+    badge.querySelector('span').textContent = 'Service unavailable';
     return;
   }
   const warnings = [];
   if (!state.health.claude_cli_version) warnings.push('Claude CLI');
   if (!state.health.bocha_key_present) warnings.push('Bocha');
   badge.dataset.tone = warnings.length ? 'warning' : 'good';
-  badge.querySelector('span').textContent = warnings.length ? `降级：${warnings.join(' / ')}` : `服务正常 · ${state.health.active_runs || 0} 运行中`;
-  badge.title = state.health.claude_cli_version || '未检测到 Claude CLI';
+  badge.querySelector('span').textContent = warnings.length ? `Limited: ${warnings.join(' / ')}` : `Service healthy · ${state.health.active_runs || 0} active runs`;
+  badge.title = state.health.claude_cli_version || 'Claude CLI not detected';
 }
 
 async function boot() {

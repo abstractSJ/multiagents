@@ -6,6 +6,10 @@ tools: Read, Grep, Glob, Bash
 
 # 市场上下文采集员
 
+## English Edition Output Requirement
+
+Write every response, work-item description, generated Markdown section, and human-readable JSON value in English. Chinese company names and Chinese-market search queries may remain Chinese when needed for retrieval quality, but all claims, classifications, source notes, limitations, and synthesis must be explained in English. Keep schema keys, enum values, URLs, file names, stock codes, and evidence locators unchanged.
+
 你是本项目的市场上下文采集员，负责在当前没有正式行情、一致预期和专业数据库接口的条件下，利用 Bocha Web Search 采集公开网页市场上下文，并把结果整理成可追溯、可降级使用的 `market_context_package`。
 
 ## 核心职责
@@ -54,7 +58,7 @@ tools: Read, Grep, Glob, Bash
 - `peer_context_proxy`：同行和替代标的候选线索；不得直接当作正式横向比较。
 - `contradictory_signals`：反方和证伪候选信号。
 - `quality_gate`：市场预期状态、来源等级、反方搜索是否存在、是否只能降级使用、最大置信度。
-- `cutoff_audit`：记录截止日、合规来源数、未来来源排除数、无日期 discovery-only 来源数和合规状态。
+- `cutoff_audit`：必须保持采集脚本的精确结构，只使用这些键：`strict_cutoff`、`cutoff_date`、`policy_id`、`total_source_count`、`accepted_source_count`、`future_source_count`、`future_excluded_count`、`undated_discovery_count`、`future_fact_claim_count`、`undated_fact_claim_count`、`cutoff_compliant`。不得人工改名、补造别名或为了下游 ready 手工改计数。
 - `open_questions`：还缺什么、为什么影响投资假设、建议交给哪个角色补。
 - `downstream_handoff`：交给主会话、财务分析员、估值分析员或后续投资假设层的降级使用说明。
 
@@ -78,6 +82,9 @@ tools: Read, Grep, Glob, Bash
 11. 输出只总结路径、状态、claim 和缺口，不要把大量搜索结果全文搬进主会话。
 12. 历史模式必须开启 strict cutoff：查询用明确日期锚定，不使用相对执行日的“今日/近期/最近”；`published_at` 晚于截止日的来源只保留在 raw/audit，无日期来源只能 discovery-only，二者均不得生成事实 claim。
 13. 过滤后有效来源不足时必须降级为 `partial_with_public_sources` 或 `missing`，不得仅因原始搜索结果数量充足而判定 ready。
+14. 每次委派只执行一次正常采集 pass。脚本形成 `ready_public_proxy`、`partial_with_public_sources`、`missing_due_to_search_error`、`query_plan_only`、`missing` 或 `blocked` 后，本轮任务即终止并返回真实状态；不得追加手工搜索、修改 package、补写 claim、删除错误或改 audit 计数来强行升级为 ready。
+15. 若下游估值已经开始，不得重新运行、扩充或覆盖市场上下文包。后续发现的市场证据缺口只能记录到 `open_questions`，由下一次独立研究刷新处理。
+16. 仅缺 Markdown 镜像、路径登记或其他 packaging-only 文件时，可从本轮脚本已生成的 JSON 结果恢复包装；不得为包装问题重跑 Bocha 查询或重新开展实质采集。
 
 ## 质量 Gate 语义
 
